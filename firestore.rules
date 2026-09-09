@@ -1,0 +1,109 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function isValidStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidGame() {
+      return hasRequiredFields(['hostUid', 'status', 'currentQuestionIndex', 'createdAt']) &&
+             request.resource.data.hostUid is string &&
+             request.resource.data.status in ['lobby', 'question', 'answer_reveal', 'leaderboard', 'podium', 'generating', 'ended'] &&
+             request.resource.data.currentQuestionIndex is number;
+    }
+    
+    function isValidQuestion() {
+      return (
+        // Short answer & Fill blank schema
+        (
+          request.resource.data.keys().hasAll(['index', 'type', 'prompt', 'canonical_answers', 'reference_answer', 'timeLimit']) &&
+          request.resource.data.index is number &&
+          request.resource.data.type in ['short_answer', 'fill_blank'] &&
+          request.resource.data.prompt is string &&
+          request.resource.data.prompt.size() > 0 &&
+          request.resource.data.prompt.size() <= 2000 &&
+          request.resource.data.canonical_answers is list &&
+          request.resource.data.canonical_answers.size() <= 50 &&
+          request.resource.data.reference_answer is string &&
+          request.resource.data.reference_answer.size() <= 3000 &&
+          request.resource.data.timeLimit is number
+        ) ||
+        // Legacy multiple choice compatibility
+        (
+          hasRequiredFields(['index', 'question', 'choices', 'correctAnswerIndex', 'timeLimit']) &&
+          request.resource.data.index is number &&
+          request.resource.data.question is string &&
+          request.resource.data.question.size() < 500 &&
+          request.resource.data.choices is list &&
+          request.resource.data.choices.size() == 4 &&
+          request.resource.data.correctAnswerIndex is number &&
+          request.resource.data.timeLimit is number
+        )
+      );
+    }
+    
+    function isValidPlayer() {
+      return hasRequiredFields(['uid', 'name', 'score', 'joinedAt']) &&
+             request.resource.data.uid is string &&
+             request.resource.data.name is string &&
+             request.resource.data.name.size() > 0 &&
+             request.resource.data.name.size() < 30 &&
+             request.resource.data.score is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /games/{gameId} {
+      // Anyone can read a game to join it or play
+      allow read: if true;
+      // Only authenticated users can create a game, and they must be the host
+      allow create: if isAuthenticated() && isValidGame() && request.resource.data.hostUid == request.auth.uid;
+      // Only the host can update the game state
+      allow update: if isAuthenticated() && isValidGame() && resource.data.hostUid == request.auth.uid && request.resource.data.hostUid == resource.data.hostUid;
+      
+      match /questions/{questionId} {
+        // Anyone in the game can read questions
+        allow read: if true;
+        // Only the host can add questions
+        allow create: if isAuthenticated() && isValidQuestion() && get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
+        // Only the host can update questions
+        allow update: if isAuthenticated() && isValidQuestion() && get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
+      }
+      
+      match /players/{playerId} {
+        // Anyone can read players (for leaderboard)
+        allow read: if true;
+        // Authenticated users can join as a player
+        allow create: if isAuthenticated() && isValidPlayer() && request.resource.data.uid == request.auth.uid;
+        // Players can update their own score/answers, host can also update players (e.g. kick)
+        allow update: if isAuthenticated() && isValidPlayer() && (
+          resource.data.uid == request.auth.uid || 
+          get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid
+        ) && request.resource.data.uid == resource.data.uid;
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Kahoot JSON Generator",
+  "description": "Treino para provas dissertativas com questões de resposta curta e correção automática determinística, léxica e semântica local.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

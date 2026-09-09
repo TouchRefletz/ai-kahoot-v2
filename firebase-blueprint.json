@@ -1,0 +1,112 @@
+{
+  "entities": {
+    "Game": {
+      "title": "Game",
+      "description": "A Kahoot-style game session",
+      "type": "object",
+      "properties": {
+        "hostUid": {
+          "type": "string",
+          "description": "The UID of the host who created the game"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["lobby", "question", "answer_reveal", "leaderboard", "podium", "generating", "ended"],
+          "description": "The current state of the game"
+        },
+        "currentQuestionIndex": {
+          "type": "number",
+          "description": "The index of the currently active question"
+        },
+        "questionStartTime": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the current question started"
+        },
+        "history": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "History of generated questions to avoid repetition"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["hostUid", "status", "currentQuestionIndex", "createdAt"]
+    },
+    "Question": {
+      "title": "Question",
+      "description": "A single short answer or fill in the blank question",
+      "type": "object",
+      "properties": {
+        "index": { "type": "number" },
+        "type": {
+          "type": "string",
+          "enum": ["short_answer", "fill_blank"]
+        },
+        "prompt": { "type": "string" },
+        "canonical_answers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Deterministic exact answers"
+        },
+        "reference_answer": {
+          "type": "string",
+          "description": "Full reference model answer"
+        },
+        "embedding_ref": {
+          "type": "array",
+          "items": { "type": "number" },
+          "description": "Dense vector embedding of reference answer"
+        },
+        "required_keywords": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Mandatory keywords"
+        },
+        "thresholds": {
+          "type": "object",
+          "properties": {
+            "full": { "type": "number" },
+            "partial": { "type": "number" }
+          },
+          "required": ["full"]
+        },
+        "rubric_explanation": { "type": "string" },
+        "timeLimit": { "type": "number" }
+      },
+      "required": ["index", "type", "prompt", "canonical_answers", "reference_answer", "embedding_ref", "thresholds", "timeLimit"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "A player in the game",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "name": { "type": "string" },
+        "score": { "type": "number" },
+        "currentAnswer": { "type": "string" },
+        "lastAnswerCorrect": { "type": "boolean" },
+        "lastScoreAdded": { "type": "number" },
+        "lastGradingResult": { "type": "object" },
+        "joinedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "name", "score", "joinedAt"]
+    }
+  },
+  "firestore": {
+    "games/{gameId}": {
+      "schema": { "$ref": "#/entities/Game" },
+      "description": "Stores the active game sessions"
+    },
+    "games/{gameId}/questions/{questionId}": {
+      "schema": { "$ref": "#/entities/Question" },
+      "description": "Stores the questions for a specific game"
+    },
+    "games/{gameId}/players/{playerId}": {
+      "schema": { "$ref": "#/entities/Player" },
+      "description": "Stores the players participating in a game"
+    }
+  }
+}
