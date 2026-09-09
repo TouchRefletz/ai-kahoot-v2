@@ -207,15 +207,49 @@ export default function Host() {
     }
   };
 
-  const forceRevealAnswer = async () => {
-    if (!gameId) return;
+  const finalizeQuestionAndReveal = async () => {
+    if (!gameId || !gameState) return;
+    processedQuestionIndex.current = gameState.currentQuestionIndex;
+    setTimeLeft(0);
+
+    const currentQ = questions[gameState.currentQuestionIndex];
     try {
-      processedQuestionIndex.current = gameState?.currentQuestionIndex ?? -1;
-      setTimeLeft(0);
-      await updateDoc(doc(db, 'games', gameId), { status: 'answer_reveal' });
+      const batch = writeBatch(db);
+
+      // Make sure all players who did not answer are marked as 0 pts / unanswered
+      players.forEach(p => {
+        const hasAnswer = Boolean(p.currentAnswer && p.currentAnswer.trim().length > 0);
+        if (!hasAnswer) {
+          const pRef = doc(db, `games/${gameId}/players`, p.id!);
+          batch.update(pRef, {
+            currentAnswer: '',
+            lastAnswerCorrect: false,
+            lastScoreAdded: 0,
+            lastGradingResult: {
+              score: 0,
+              mode: 'none',
+              details: {
+                normalizedStudent: '',
+                normalizedReference: currentQ?.reference_answer || '',
+                lexicalSimilarity: 0,
+                jaccardSimilarity: 0,
+                cosineSimilarity: 0,
+                reason: 'Tempo esgotado - Sem resposta enviada'
+              }
+            }
+          });
+        }
+      });
+
+      batch.update(doc(db, 'games', gameId), { status: 'answer_reveal' });
+      await batch.commit();
     } catch (e) {
       handleFirestoreError(e, OperationType.UPDATE, `games/${gameId}`);
     }
+  };
+
+  const forceRevealAnswer = async () => {
+    await finalizeQuestionAndReveal();
   };
 
   const processedQuestionIndex = useRef(-1);
@@ -242,12 +276,7 @@ export default function Host() {
           processedQuestionIndex.current = gameState.currentQuestionIndex;
           setTimeLeft(0);
           clearInterval(interval);
-
-          try {
-            await updateDoc(doc(db, 'games', gameId!), { status: 'answer_reveal' });
-          } catch (e) {
-            handleFirestoreError(e, OperationType.UPDATE, `games/${gameId}`);
-          }
+          await finalizeQuestionAndReveal();
         } else {
           setTimeLeft(remaining);
         }
@@ -481,15 +510,20 @@ export default function Host() {
   const startGame = async () => {
     if (questions.length === 0) return;
     processedQuestionIndex.current = -1;
+    setHostAnswerText('');
+    setHostSubmitted(false);
+    setHostGradingResult(null);
     try {
       const batch = writeBatch(db);
       players.forEach(p => {
         const pRef = doc(db, `games/${gameId}/players`, p.id!);
         batch.update(pRef, {
+          score: 0,
           currentAnswer: null,
           lastAnswerCorrect: null,
           lastScoreAdded: 0,
-          score: 0
+          lastGradingResult: null,
+          answeredAt: null
         });
       });
 
@@ -512,10 +546,19 @@ export default function Host() {
       confetti({ particleCount: 300, spread: 150, origin: { y: 0.6 } });
     } else {
       processedQuestionIndex.current = -1;
+      setHostAnswerText('');
+      setHostSubmitted(false);
+      setHostGradingResult(null);
       const batch = writeBatch(db);
       players.forEach(p => {
         const pRef = doc(db, `games/${gameId}/players`, p.id!);
-        batch.update(pRef, { currentAnswer: null });
+        batch.update(pRef, {
+          currentAnswer: null,
+          lastAnswerCorrect: null,
+          lastScoreAdded: 0,
+          lastGradingResult: null,
+          answeredAt: null
+        });
       });
 
       batch.update(doc(db, 'games', gameId!), {
@@ -1336,7 +1379,7 @@ export default function Host() {
             </div>
 
             {/* Host's Own Result Card if Host Played */}
-            {hostPlays && hostPlayer?.lastGradingResult && (
+            {hostPlays && (
               <div className="bg-neutral-800/90 p-5 rounded-3xl border border-indigo-500/50 shadow-xl space-y-3">
                 <div className="flex items-center justify-between border-b border-neutral-700/80 pb-2">
                   <div className="flex items-center gap-2">
@@ -1346,29 +1389,35 @@ export default function Host() {
                     </h3>
                   </div>
                   <span className="text-xs font-mono font-bold text-emerald-400">
-                    +{hostPlayer.lastScoreAdded || 0} pts nesta questão
+                    +{hostPlayer?.currentAnswer ? (hostPlayer?.lastScoreAdded || 0) : 0} pts nesta questão
                   </span>
                 </div>
 
-                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-neutral-900 p-4 rounded-xl border border-neutral-750">
-                  <div className="space-y-1 max-w-xl">
-                    <span className="text-[10px] uppercase font-bold text-neutral-400 block">Sua Resposta:</span>
-                    <p className="text-sm text-neutral-200 italic">"{hostPlayer.currentAnswer}"</p>
-                    {hostPlayer.lastGradingResult?.details?.reason && (
-                      <p className="text-xs text-neutral-400">{hostPlayer.lastGradingResult.details.reason}</p>
-                    )}
+                {hostPlayer?.currentAnswer ? (
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-neutral-900 p-4 rounded-xl border border-neutral-750">
+                    <div className="space-y-1 max-w-xl">
+                      <span className="text-[10px] uppercase font-bold text-neutral-400 block">Sua Resposta:</span>
+                      <p className="text-sm text-neutral-200 italic">"{hostPlayer.currentAnswer}"</p>
+                      {hostPlayer.lastGradingResult?.details?.reason && (
+                        <p className="text-xs text-neutral-400">{hostPlayer.lastGradingResult.details.reason}</p>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0">
+                      <span className="text-2xl font-black font-mono text-emerald-400">
+                        {Math.round((hostPlayer.lastGradingResult?.score || 0) * 100)}%
+                      </span>
+                      <span className="text-[10px] block uppercase font-bold text-neutral-400">
+                        {hostPlayer.lastGradingResult?.mode === 'exact' ? 'Exato' :
+                         hostPlayer.lastGradingResult?.mode === 'lexical' ? 'Léxico' :
+                         hostPlayer.lastGradingResult?.mode === 'semantic' ? 'Semântico' : 'Incorreto'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-right shrink-0">
-                    <span className="text-2xl font-black font-mono text-emerald-400">
-                      {Math.round((hostPlayer.lastGradingResult?.score || 0) * 100)}%
-                    </span>
-                    <span className="text-[10px] block uppercase font-bold text-neutral-400">
-                      {hostPlayer.lastGradingResult?.mode === 'exact' ? 'Exato' :
-                       hostPlayer.lastGradingResult?.mode === 'lexical' ? 'Léxico' :
-                       hostPlayer.lastGradingResult?.mode === 'semantic' ? 'Semântico' : 'Incorreto'}
-                    </span>
+                ) : (
+                  <div className="bg-neutral-900 p-4 rounded-xl border border-neutral-750 text-neutral-400 text-xs">
+                    Você não enviou resposta nesta questão dentro do tempo limite (+0 pts).
                   </div>
-                </div>
+                )}
               </div>
             )}
 
@@ -1382,9 +1431,14 @@ export default function Host() {
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-2 custom-scrollbar">
                 {players.map((p) => {
                   const isHost = p.id === auth.currentUser?.uid;
-                  const res = p.lastGradingResult;
-                  const scorePct = res ? Math.round(res.score * 100) : 0;
-                  const mode = res?.mode || 'none';
+                  const hasAnswered = Boolean(p.currentAnswer && p.currentAnswer.trim().length > 0);
+                  const res = hasAnswered ? p.lastGradingResult : null;
+                  const scorePct = hasAnswered && res ? Math.round(res.score * 100) : 0;
+                  const mode = hasAnswered && res ? res.mode : 'none';
+                  const pointsAdded = hasAnswered ? (p.lastScoreAdded || 0) : 0;
+                  const reasonText = hasAnswered
+                    ? (res?.details?.reason || '')
+                    : 'Tempo esgotado - Sem resposta enviada';
 
                   return (
                     <div
@@ -1406,33 +1460,36 @@ export default function Host() {
                           )}
                           <span className={cn(
                             "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider",
+                            !hasAnswered ? "bg-neutral-800 text-neutral-400 border border-neutral-700" :
                             mode === 'exact' ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" :
                             mode === 'lexical' ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" :
                             mode === 'semantic' ? "bg-purple-500/20 text-purple-300 border border-purple-500/30" :
                             "bg-red-500/20 text-red-300 border border-red-500/30"
                           )}>
-                            {mode === 'exact' ? 'Exato' :
+                            {!hasAnswered ? 'Sem Resposta' :
+                             mode === 'exact' ? 'Exato' :
                              mode === 'lexical' ? 'Léxico' :
                              mode === 'semantic' ? 'Semântico' : 'Incorreto'}
                           </span>
                         </div>
                         <p className="text-neutral-300 text-sm italic">
-                          {p.currentAnswer ? `"${p.currentAnswer}"` : <span className="text-neutral-500">Sem resposta</span>}
+                          {hasAnswered ? `"${p.currentAnswer}"` : <span className="text-neutral-500">Sem resposta enviada</span>}
                         </p>
-                        {res?.details?.reason && (
-                          <p className="text-xs text-neutral-400">{res.details.reason}</p>
+                        {reasonText && (
+                          <p className="text-xs text-neutral-400">{reasonText}</p>
                         )}
                       </div>
 
                       <div className="text-right shrink-0 flex items-center md:flex-col gap-2 md:gap-1">
                         <span className={cn(
                           "text-xl font-black font-mono",
+                          !hasAnswered ? "text-neutral-500" :
                           scorePct >= 80 ? "text-emerald-400" :
                           scorePct >= 50 ? "text-amber-400" : "text-red-400"
                         )}>
                           {scorePct}%
                         </span>
-                        <span className="text-xs text-neutral-400 font-mono">+{p.lastScoreAdded || 0} pts</span>
+                        <span className="text-xs text-neutral-400 font-mono">+{pointsAdded} pts</span>
                       </div>
                     </div>
                   );

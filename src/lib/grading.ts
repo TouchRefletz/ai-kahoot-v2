@@ -20,6 +20,152 @@ export function normalizeText(text: string): string {
 }
 
 /**
+ * Portuguese stemmer and concept root helper.
+ * Removes grammatical inflections (plurals, gender endings, suffixes)
+ * so that words like "tirânico", "tirana", "tiranias" map to "tiran",
+ * matching keyword "tirania".
+ */
+export function stemWord(word: string): string {
+  let w = normalizeText(word);
+  if (w.length <= 3) return w;
+
+  // Semantic concept root equivalences for common exam concepts
+  if (w.startsWith('livr') || w.startsWith('libert') || w.startsWith('liberd')) return 'liberd';
+  if (w.startsWith('tiran')) return 'tiran';
+  if (w.startsWith('despot')) return 'despot';
+  if (w.startsWith('autoritar')) return 'autoritar';
+  if (w.startsWith('democr')) return 'democr';
+  if (w.startsWith('constitu')) return 'constitu';
+  if (w.startsWith('legislat')) return 'legislat';
+  if (w.startsWith('execut')) return 'execut';
+  if (w.startsWith('judici')) return 'judici';
+  if (w.startsWith('enzim')) return 'enzim';
+  if (w.startsWith('catalis')) return 'catalis';
+  if (w.startsWith('mitocondr')) return 'mitocondr';
+  if (w.startsWith('cloroplast')) return 'cloroplast';
+  if (w.startsWith('fotossint')) return 'fotossint';
+  if (w.startsWith('respirac')) return 'respirac';
+  if (w.startsWith('equilibr') || w.startsWith('desequilibr')) return 'equilibr';
+
+  // Common Portuguese suffix removals
+  const suffixes = [
+    'adissimas', 'adissimos', 'adissima', 'adissimo',
+    'mentes', 'mente',
+    'idades', 'idade',
+    'ismos', 'ismo',
+    'istas', 'ista',
+    'acoes', 'acao', 'coes', 'cao',
+    'aveis', 'iveis', 'avel', 'ivel',
+    'amentos', 'amento',
+    'ancias', 'ancia', 'encias', 'encia',
+    'arios', 'ario', 'arias', 'aria',
+    'adores', 'adora', 'ador',
+    'antes', 'ante', 'entes', 'ente',
+    'ando', 'endo', 'indo',
+    'aram', 'eram', 'iram',
+    'avam', 'evam', 'ivam',
+    'assem', 'essem', 'issem',
+    'arias', 'erias', 'irias',
+    'aria', 'eria', 'iria',
+    'asse', 'esse', 'isse',
+    'icos', 'icas', 'ico', 'ica',
+    'osos', 'osas', 'oso', 'osa',
+    'ados', 'adas', 'ado', 'ada',
+    'ais', 'eis', 'ois', 'uis',
+    'al', 'el', 'il', 'ol', 'ul',
+    'ias', 'ia',
+    'os', 'as', 'es', 's'
+  ];
+
+  for (const suf of suffixes) {
+    if (w.endsWith(suf) && w.length - suf.length >= 3) {
+      w = w.slice(0, -suf.length);
+      break;
+    }
+  }
+
+  return w;
+}
+
+/**
+ * Computes Levenshtein edit distance between two strings
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const m = a.length;
+  const n = b.length;
+  const dp: number[][] = [];
+
+  for (let i = 0; i <= m; i++) dp[i] = [i];
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return dp[m][n];
+}
+
+/**
+ * Evaluates whether a keyword exists in the student answer.
+ * Uses exact substring, Portuguese stemming, and prefix checks.
+ */
+export function matchKeyword(text: string, keyword: string): { matched: boolean; matchedWord?: string } {
+  const normText = normalizeText(text);
+  const normKey = normalizeText(keyword);
+  if (!normKey) return { matched: true };
+
+  // 1. Direct whole phrase or substring match
+  if (normText.includes(normKey)) {
+    return { matched: true, matchedWord: normKey };
+  }
+
+  // 2. Check word-by-word against stem and prefixes
+  const textWords = normText.split(/\s+/).filter(w => w.length > 0);
+  const keyWords = normKey.split(/\s+/).filter(w => w.length > 0);
+
+  if (keyWords.length === 1) {
+    const keyStem = stemWord(normKey);
+    for (const tw of textWords) {
+      const twStem = stemWord(tw);
+      if (twStem === keyStem) {
+        return { matched: true, matchedWord: tw };
+      }
+      // If root is >= 4 chars, prefix check (e.g. tiranico starts with tiran)
+      if (keyStem.length >= 4 && (tw.startsWith(keyStem) || keyStem.startsWith(twStem))) {
+        return { matched: true, matchedWord: tw };
+      }
+      // Typo tolerance of 1 char for words of length >= 5
+      if (keyStem.length >= 5 && Math.abs(twStem.length - keyStem.length) <= 1) {
+        if (levenshteinDistance(twStem, keyStem) <= 1) {
+          return { matched: true, matchedWord: tw };
+        }
+      }
+    }
+  } else {
+    // Multi-word keyword phrase: all words in phrase or their stems must be present
+    const allFound = keyWords.every(kw => {
+      const kwStem = stemWord(kw);
+      return textWords.some(tw => {
+        const twStem = stemWord(tw);
+        return twStem === kwStem || (kwStem.length >= 4 && (tw.startsWith(kwStem) || kwStem.startsWith(twStem)));
+      });
+    });
+    if (allFound) {
+      return { matched: true, matchedWord: normKey };
+    }
+  }
+
+  return { matched: false };
+}
+
+/**
  * Extracts a Set of unique normalized words from a text string.
  */
 export function extractWords(text: string): Set<string> {
@@ -69,19 +215,6 @@ export function computeJaccardSimilarity(setA: Set<string>, setB: Set<string>): 
 }
 
 /**
- * Evaluates whether a keyword exists in the normalized student answer.
- * Uses whole-word or substring boundary checks.
- */
-function containsKeyword(normalizedText: string, keyword: string): boolean {
-  const normKey = normalizeText(keyword);
-  if (!normKey) return true;
-
-  // Exact word boundary check or substring match for multi-word phrases
-  const regex = new RegExp(`(^|\\s)${normKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\s|$)`, 'i');
-  return regex.test(normalizedText) || normalizedText.includes(normKey);
-}
-
-/**
  * Core grading function for short answers.
  * Implements the deterministic -> lexical -> semantic pipeline without any LLM.
  *
@@ -94,9 +227,24 @@ export function gradeShortAnswer(
   question: Question,
   studentEmbedding?: number[]
 ): GradingResult {
-  // a) Normalização de texto
   const normStudent = normalizeText(studentAnswer);
   const normRef = normalizeText(question.reference_answer);
+
+  // 1. STRICT CHECK: If student answer is empty, score is ALWAYS 0
+  if (!normStudent || normStudent.length === 0) {
+    return {
+      score: 0,
+      mode: 'none',
+      details: {
+        normalizedStudent: '',
+        normalizedReference: normRef,
+        lexicalSimilarity: 0,
+        jaccardSimilarity: 0,
+        cosineSimilarity: 0,
+        reason: 'Sem resposta enviada'
+      }
+    };
+  }
 
   const wordsStudent = extractWords(studentAnswer);
   const wordsRef = extractWords(question.reference_answer);
@@ -104,27 +252,11 @@ export function gradeShortAnswer(
   const diceScore = computeDiceSimilarity(wordsStudent, wordsRef);
   const jaccardScore = computeJaccardSimilarity(wordsStudent, wordsRef);
 
-  // If student answer is empty, score is 0
-  if (!normStudent) {
-    return {
-      score: 0,
-      mode: 'none',
-      details: {
-        normalizedStudent: normStudent,
-        normalizedReference: normRef,
-        lexicalSimilarity: 0,
-        jaccardSimilarity: 0,
-        cosineSimilarity: 0,
-        reason: 'Resposta em branco'
-      }
-    };
-  }
-
-  // b) Checagem de matching exato contra question.canonical_answers
+  // 2. Exact match against question.canonical_answers
   const canonicalMatches = (question.canonical_answers || []).map(ans => normalizeText(ans));
   for (let i = 0; i < canonicalMatches.length; i++) {
     const canonical = canonicalMatches[i];
-    if (canonical && normStudent === canonical) {
+    if (canonical && canonical.length > 0 && normStudent === canonical) {
       return {
         score: 1.0, // 100%
         mode: 'exact',
@@ -140,24 +272,30 @@ export function gradeShortAnswer(
     }
   }
 
-  // c) Checagem de required_keywords (se existir)
+  // 3. Evaluate required keywords using flexible stem matching
   const foundKeywords: string[] = [];
   const missingKeywords: string[] = [];
 
   if (question.required_keywords && question.required_keywords.length > 0) {
     for (const kw of question.required_keywords) {
-      if (containsKeyword(normStudent, kw)) {
-        foundKeywords.push(kw);
+      const match = matchKeyword(normStudent, kw);
+      if (match.matched) {
+        foundKeywords.push(match.matchedWord && normalizeText(match.matchedWord) !== normalizeText(kw)
+          ? `${kw} (identificado como "${match.matchedWord}")`
+          : kw);
       } else {
         missingKeywords.push(kw);
       }
     }
+  }
 
-    // Se alguma palavra-chave obrigatória não estiver presente, retornar score = 0
-    if (missingKeywords.length > 0) {
+  // For fill_blank questions:
+  if (question.type === 'fill_blank') {
+    // In fill-in-the-blank, canonical answers or keywords are the answer key
+    if (foundKeywords.length > 0 && missingKeywords.length === 0) {
       return {
-        score: 0,
-        mode: 'none',
+        score: 1.0,
+        mode: 'exact',
         details: {
           normalizedStudent: normStudent,
           normalizedReference: normRef,
@@ -165,14 +303,43 @@ export function gradeShortAnswer(
           missingKeywords,
           lexicalSimilarity: Math.round(diceScore * 1000) / 1000,
           jaccardSimilarity: Math.round(jaccardScore * 1000) / 1000,
-          reason: `Faltaram palavras-chave obrigatórias: ${missingKeywords.join(', ')}`
+          reason: `Preencheu corretamente a lacuna com termo esperado (${foundKeywords.join(', ')})`
         }
       };
     }
+
+    if (diceScore >= 0.60) {
+      return {
+        score: 1.0,
+        mode: 'lexical',
+        details: {
+          normalizedStudent: normStudent,
+          normalizedReference: normRef,
+          foundKeywords,
+          missingKeywords,
+          lexicalSimilarity: Math.round(diceScore * 1000) / 1000,
+          reason: 'Termo correspondente por similaridade'
+        }
+      };
+    }
+
+    return {
+      score: 0,
+      mode: 'none',
+      details: {
+        normalizedStudent: normStudent,
+        normalizedReference: normRef,
+        foundKeywords,
+        missingKeywords,
+        lexicalSimilarity: Math.round(diceScore * 1000) / 1000,
+        reason: missingKeywords.length > 0
+          ? `Termo incorreto para a lacuna. Termo esperado: ${missingKeywords.join(', ')}`
+          : 'Termo incorreto para a lacuna'
+      }
+    };
   }
 
-  // d) Cálculo de similaridade léxica (Dice / Jaccard)
-  // Threshold padrão sugerido: Dice >= 0.70 (ou Jaccard >= 0.55)
+  // 4. Lexical similarity (Dice / Jaccard) for short answer
   const LEXICAL_THRESHOLD = 0.70;
   if (diceScore >= LEXICAL_THRESHOLD) {
     return {
@@ -185,40 +352,67 @@ export function gradeShortAnswer(
         missingKeywords,
         lexicalSimilarity: Math.round(diceScore * 1000) / 1000,
         jaccardSimilarity: Math.round(jaccardScore * 1000) / 1000,
-        reason: `Alta similaridade léxica (Dice: ${(diceScore * 100).toFixed(1)}% >= ${(LEXICAL_THRESHOLD * 100).toFixed(0)}%)`
+        reason: `Alta correspondência conceitual léxica (Dice: ${(diceScore * 100).toFixed(1)}%)`
       }
     };
   }
 
-  // e) Cálculo de similaridade semântica via cosseno
-  const fullThreshold = question.thresholds?.full ?? 0.82;
-  const partialThreshold = question.thresholds?.partial ?? 0.65;
+  // 5. Semantic similarity via embeddings cosine
+  const fullThreshold = question.thresholds?.full ?? 0.80;
+  const partialThreshold = question.thresholds?.partial ?? 0.62;
 
   let cosine = 0;
   if (studentEmbedding && question.embedding_ref && question.embedding_ref.length > 0) {
     cosine = cosineSimilarity(question.embedding_ref, studentEmbedding);
   }
 
-  let finalScore = 0;
+  let rawSemanticScore = 0;
   let semanticReason = '';
 
   if (cosine >= fullThreshold) {
-    finalScore = 1.0;
+    rawSemanticScore = 1.0;
     semanticReason = `Similaridade semântica plena (cosseno: ${(cosine * 100).toFixed(1)}% >= ${(fullThreshold * 100).toFixed(1)}%)`;
   } else if (cosine >= partialThreshold) {
-    // Fórmula de pontuação parcial contínua entre 0.5 e 0.8:
-    // score = 0.5 + 0.3 * ((cosine - partial) / (full - partial))
+    // Continuous partial score between 0.50 and 0.85:
     const ratio = (cosine - partialThreshold) / Math.max(0.001, fullThreshold - partialThreshold);
-    const calculatedScore = 0.5 + 0.3 * Math.min(1, Math.max(0, ratio));
-    finalScore = Math.round(calculatedScore * 100) / 100;
+    rawSemanticScore = 0.50 + 0.35 * Math.min(1, Math.max(0, ratio));
     semanticReason = `Similaridade semântica parcial (cosseno: ${(cosine * 100).toFixed(1)}%, faixa [${(partialThreshold * 100).toFixed(0)}% - ${(fullThreshold * 100).toFixed(0)}%])`;
+  } else if (cosine >= partialThreshold - 0.12) {
+    // Recognition of topic/context (e.g. between 50% and 62% cosine)
+    const ratio = (cosine - (partialThreshold - 0.12)) / 0.12;
+    rawSemanticScore = 0.30 + 0.20 * Math.min(1, Math.max(0, ratio));
+    semanticReason = `Compreensão conceitual aproximada (cosseno: ${(cosine * 100).toFixed(1)}%)`;
   } else {
-    finalScore = 0;
+    rawSemanticScore = 0;
     semanticReason = `Similaridade semântica insuficiente (cosseno: ${(cosine * 100).toFixed(1)}% < ${(partialThreshold * 100).toFixed(1)}%)`;
   }
 
+  // 6. Integrate keyword coverage with semantic score FAIRLY (no total zero-out veto)
+  let finalScore = rawSemanticScore;
+  const totalKeywords = (question.required_keywords || []).length;
+
+  if (totalKeywords > 0) {
+    const keywordCoverage = foundKeywords.length / totalKeywords;
+
+    if (missingKeywords.length === 0) {
+      // All required keywords/roots matched! Full semantic score applies
+      finalScore = rawSemanticScore;
+    } else if (rawSemanticScore > 0) {
+      // Student understood the concept semantically, but missed some specific vocabulary
+      // Apply fair scaling (0.60 base + 0.40 * coverage) so students are NOT zeroed out
+      const factor = 0.60 + 0.40 * keywordCoverage;
+      finalScore = Math.max(0.35, Math.round(rawSemanticScore * factor * 100) / 100);
+
+      const foundText = foundKeywords.length > 0 ? `Termos identificados: ${foundKeywords.join(', ')}. ` : '';
+      semanticReason = `${foundText}Atenção: faltou abordar explicitamente: ${missingKeywords.join(', ')}. Similaridade semântica: ${(cosine * 100).toFixed(1)}%.`;
+    } else {
+      finalScore = 0;
+      semanticReason = `Resposta insuficiente. Faltaram os conceitos essenciais: ${missingKeywords.join(', ')}. (Cosseno: ${(cosine * 100).toFixed(1)}%).`;
+    }
+  }
+
   return {
-    score: finalScore,
+    score: Math.min(1.0, Math.max(0, finalScore)),
     mode: 'semantic',
     details: {
       normalizedStudent: normStudent,
@@ -242,13 +436,25 @@ export async function gradeShortAnswerAsync(
   studentAnswer: string,
   question: Question
 ): Promise<GradingResult> {
+  const normStudent = normalizeText(studentAnswer);
+  if (!normStudent) {
+    return gradeShortAnswer(studentAnswer, question);
+  }
+
+  // Ensure reference embedding exists
+  if ((!question.embedding_ref || question.embedding_ref.length === 0) && question.reference_answer) {
+    try {
+      question.embedding_ref = await computeEmbedding(question.reference_answer);
+    } catch (err) {
+      console.warn('Erro ao computar embedding da resposta-modelo:', err);
+    }
+  }
+
   let studentEmbedding: number[] | undefined = undefined;
 
-  // Only calculate embedding if not an exact match and required keywords pass
-  const normStudent = normalizeText(studentAnswer);
+  // Only calculate student embedding if not an exact match
   const isExact = (question.canonical_answers || []).some(ans => normalizeText(ans) === normStudent);
-
-  if (!isExact && normStudent) {
+  if (!isExact) {
     try {
       studentEmbedding = await computeEmbedding(studentAnswer);
     } catch (err) {
@@ -258,3 +464,4 @@ export async function gradeShortAnswerAsync(
 
   return gradeShortAnswer(studentAnswer, question, studentEmbedding);
 }
+

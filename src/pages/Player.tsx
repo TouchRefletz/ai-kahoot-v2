@@ -250,8 +250,13 @@ export default function Player() {
 
   const status = gameState.status;
   const currentQ = questions[gameState.currentQuestionIndex];
-  const hasAnswered = playerState?.currentAnswer !== null && playerState?.currentAnswer !== undefined && playerState?.currentAnswer !== '';
-  const grading = playerState?.lastGradingResult || localGradingResult;
+  const hasAnswered = Boolean(
+    playerState?.currentAnswer !== null &&
+    playerState?.currentAnswer !== undefined &&
+    typeof playerState?.currentAnswer === 'string' &&
+    playerState.currentAnswer.trim().length > 0
+  );
+  const grading = hasAnswered ? (localGradingResult || playerState?.lastGradingResult) : null;
 
   return (
     <div className="min-h-screen bg-neutral-900 text-white font-sans flex flex-col">
@@ -417,43 +422,56 @@ export default function Player() {
             </div>
 
             {/* Score Banner */}
-            <div className={cn(
-              "p-5 rounded-2xl border text-center space-y-2 shadow-lg",
-              (grading?.score || 0) >= 0.82
-                ? "bg-emerald-950/60 border-emerald-700/80 text-emerald-300"
-                : (grading?.score || 0) >= 0.50
-                ? "bg-amber-950/60 border-amber-700/80 text-amber-300"
-                : "bg-red-950/60 border-red-800/80 text-red-300"
-            )}>
-              <div className="flex items-center justify-center gap-2">
-                {(grading?.score || 0) >= 0.82 ? (
-                  <CheckCircle2 className="w-7 h-7 text-emerald-400" />
-                ) : (grading?.score || 0) >= 0.50 ? (
-                  <FileCheck className="w-7 h-7 text-amber-400" />
-                ) : (
-                  <XCircle className="w-7 h-7 text-red-400" />
-                )}
-                <span className="text-3xl font-black font-mono">
-                  {Math.round((grading?.score || 0) * 100)}%
-                </span>
-              </div>
+            {hasAnswered && grading ? (
+              <div className={cn(
+                "p-5 rounded-2xl border text-center space-y-2 shadow-lg",
+                (grading.score || 0) >= 0.82
+                  ? "bg-emerald-950/60 border-emerald-700/80 text-emerald-300"
+                  : (grading.score || 0) >= 0.50
+                  ? "bg-amber-950/60 border-amber-700/80 text-amber-300"
+                  : "bg-red-950/60 border-red-800/80 text-red-300"
+              )}>
+                <div className="flex items-center justify-center gap-2">
+                  {(grading.score || 0) >= 0.82 ? (
+                    <CheckCircle2 className="w-7 h-7 text-emerald-400" />
+                  ) : (grading.score || 0) >= 0.50 ? (
+                    <FileCheck className="w-7 h-7 text-amber-400" />
+                  ) : (
+                    <XCircle className="w-7 h-7 text-red-400" />
+                  )}
+                  <span className="text-3xl font-black font-mono">
+                    {Math.round((grading.score || 0) * 100)}%
+                  </span>
+                </div>
 
-              <p className="font-bold text-sm">
-                {(grading?.score || 0) >= 0.82 ? 'Resposta Plena / Correta!' :
-                 (grading?.score || 0) >= 0.50 ? 'Resposta Parcialmente Correta' :
-                 'Resposta Incorreta'}
-              </p>
+                <p className="font-bold text-sm">
+                  {(grading.score || 0) >= 0.82 ? 'Resposta Plena / Correta!' :
+                   (grading.score || 0) >= 0.50 ? 'Resposta Parcialmente Correta' :
+                   'Resposta Incorreta'}
+                </p>
 
-              <div className="inline-block bg-neutral-900/60 px-3 py-1 rounded-full text-xs font-bold">
-                +{playerState?.lastScoreAdded || 0} pontos ganhos
+                <div className="inline-block bg-neutral-900/60 px-3 py-1 rounded-full text-xs font-bold">
+                  +{playerState?.lastScoreAdded || 0} pontos ganhos
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="p-5 rounded-2xl border text-center space-y-2 shadow-lg bg-neutral-800/90 border-neutral-700 text-neutral-400">
+                <div className="flex items-center justify-center gap-2">
+                  <XCircle className="w-7 h-7 text-neutral-500" />
+                  <span className="text-3xl font-black font-mono text-neutral-400">0%</span>
+                </div>
+                <p className="font-bold text-sm text-neutral-300">Tempo Esgotado - Sem Resposta</p>
+                <div className="inline-block bg-neutral-900/60 px-3 py-1 rounded-full text-xs font-bold text-neutral-400">
+                  +0 pontos nesta questão
+                </div>
+              </div>
+            )}
 
             {/* What student answered */}
             <div className="bg-neutral-800/90 p-4 rounded-xl border border-neutral-700 text-xs space-y-1">
               <span className="font-bold text-neutral-400 uppercase tracking-wider text-[10px]">Sua Resposta:</span>
               <p className="text-neutral-200 text-sm italic">
-                {playerState?.currentAnswer ? `"${playerState.currentAnswer}"` : <span className="text-neutral-500">Sem resposta enviada</span>}
+                {hasAnswered ? `"${playerState?.currentAnswer}"` : <span className="text-neutral-500">Sem resposta enviada no tempo limite</span>}
               </p>
             </div>
 
