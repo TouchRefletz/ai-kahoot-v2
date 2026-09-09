@@ -4,6 +4,7 @@ import { doc, setDoc, collection, onSnapshot, query, orderBy, updateDoc, writeBa
 import { db, auth } from '../firebase';
 import { handleFirestoreError, OperationType } from '../lib/firestore';
 import { computeEmbedding } from '../lib/embeddings';
+import { gradeShortAnswerAsync } from '../lib/grading';
 import { Question, QuestionType, PlayerData } from '../lib/types';
 import {
   extractJsonFromText, sanitizeQuestions, generateExternalAIPrompt
@@ -11,7 +12,8 @@ import {
 import {
   Upload, FileText, Trash2, Play, Users, BrainCircuit, CheckCircle2,
   Copy, Check, Download, Sparkles, PlusCircle, AlertCircle, ChevronRight,
-  Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers
+  Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers,
+  Gamepad2, Send, Clock, FastForward, Medal
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
@@ -59,6 +61,15 @@ export default function Host() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [timeLeft, setTimeLeft] = useState<number>(0);
 
+  // Host as Player State
+  const [hostPlays, setHostPlays] = useState<boolean>(true);
+  const [hostNickname, setHostNickname] = useState<string>(
+    auth.currentUser?.displayName ? `Host (${auth.currentUser.displayName})` : 'Host'
+  );
+  const [hostAnswerText, setHostAnswerText] = useState('');
+  const [isSubmittingHost, setIsSubmittingHost] = useState(false);
+  const [hostGradingResult, setHostGradingResult] = useState<any>(null);
+
   useEffect(() => {
     if (!auth.currentUser) {
       navigate('/');
@@ -76,6 +87,22 @@ export default function Host() {
           status: 'lobby',
           currentQuestionIndex: 0,
           createdAt: new Date().toISOString()
+        });
+
+        // Automatically register Host as player so the host can play and compete in the ranking
+        const initialName = auth.currentUser!.displayName 
+          ? `Host (${auth.currentUser!.displayName})` 
+          : 'Host';
+
+        await setDoc(doc(db, `games/${newGameId}/players`, auth.currentUser!.uid), {
+          uid: auth.currentUser!.uid,
+          name: initialName,
+          score: 0,
+          currentAnswer: null,
+          lastAnswerCorrect: null,
+          lastScoreAdded: 0,
+          lastGradingResult: null,
+          joinedAt: new Date().toISOString()
         });
       } catch (err) {
         handleFirestoreError(err, OperationType.CREATE, `games/${newGameId}`);
@@ -102,6 +129,94 @@ export default function Host() {
       unsubQuestions();
     };
   }, [navigate]);
+
+  // Reset host answer when question changes
+  useEffect(() => {
+    if (gameState?.status === 'question') {
+      setHostAnswerText('');
+      setIsSubmittingHost(false);
+      setHostGradingResult(null);
+    }
+  }, [gameState?.currentQuestionIndex, gameState?.status]);
+
+  const toggleHostParticipation = async (enable: boolean, customName?: string) => {
+    if (!gameId || !auth.currentUser) return;
+    setHostPlays(enable);
+    const hostUid = auth.currentUser.uid;
+    const finalName = (customName !== undefined ? customName : hostNickname).trim() || 'Host';
+
+    try {
+      if (enable) {
+        await setDoc(doc(db, `games/${gameId}/players`, hostUid), {
+          uid: hostUid,
+          name: finalName,
+          score: 0,
+          currentAnswer: null,
+          lastAnswerCorrect: null,
+          lastScoreAdded: 0,
+          lastGradingResult: null,
+          joinedAt: new Date().toISOString()
+        }, { merge: true });
+      } else {
+        await deleteDoc(doc(db, `games/${gameId}/players`, hostUid));
+      }
+    } catch (err) {
+      console.error('Erro ao sincronizar participação do host:', err);
+    }
+  };
+
+  const handleSubmitHostAnswer = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (isSubmittingHost || !hostAnswerText.trim() || !gameId || !auth.currentUser) return;
+    const currentQ = questions[gameState?.currentQuestionIndex];
+    if (!currentQ || gameState?.status !== 'question') return;
+
+    setIsSubmittingHost(true);
+    const trimmedAnswer = hostAnswerText.trim();
+
+    try {
+      // 1. Grade the short answer locally (all-MiniLM-L6-v2 + lexical + canonical)
+      const gradingResult = await gradeShortAnswerAsync(trimmedAnswer, currentQ);
+      setHostGradingResult(gradingResult);
+
+      // 2. Compute points based on score (0.0 to 1.0) and response time
+      const start = gameState.questionStartTime ? new Date(gameState.questionStartTime).getTime() : Date.now();
+      const now = Date.now();
+      const elapsed = Math.max(0, (now - start) / 1000);
+      const timeRatio = Math.min(elapsed / (currentQ.timeLimit || 45), 1);
+      const timeMultiplier = Math.max(0.70, 1 - 0.30 * Math.pow(timeRatio, 2));
+      const points = Math.round(gradingResult.score * 1000 * timeMultiplier);
+      const isCorrect = gradingResult.score >= 0.5;
+
+      const hostUid = auth.currentUser.uid;
+      const currentHostPlayer = players.find(p => p.id === hostUid);
+
+      // 3. Save to Firestore
+      await updateDoc(doc(db, `games/${gameId}/players`, hostUid), {
+        currentAnswer: trimmedAnswer,
+        answeredAt: new Date().toISOString(),
+        lastAnswerCorrect: isCorrect,
+        lastScoreAdded: points,
+        lastGradingResult: gradingResult,
+        score: (currentHostPlayer?.score || 0) + points
+      });
+    } catch (err) {
+      console.error('Erro ao avaliar resposta do host:', err);
+    } finally {
+      setIsSubmittingHost(false);
+    }
+  };
+
+  const forceRevealAnswer = async () => {
+    if (!gameId) return;
+    try {
+      processedQuestionIndex.current = gameState?.currentQuestionIndex ?? -1;
+      setTimeLeft(0);
+      await updateDoc(doc(db, 'games', gameId), { status: 'answer_reveal' });
+    } catch (e) {
+      handleFirestoreError(e, OperationType.UPDATE, `games/${gameId}`);
+    }
+  };
 
   const processedQuestionIndex = useRef(-1);
 
@@ -425,6 +540,7 @@ export default function Host() {
   }
 
   const currentQ = questions[gameState.currentQuestionIndex];
+  const hostPlayer = players.find(p => p.id === auth.currentUser?.uid);
 
   return (
     <div className="min-h-screen bg-neutral-900 text-white font-sans flex flex-col">
@@ -445,7 +561,16 @@ export default function Host() {
           </div>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 sm:gap-4">
+          {hostPlays && (
+            <div className="hidden sm:flex items-center gap-2 bg-indigo-950/70 border border-indigo-700/60 px-3 py-1.5 rounded-xl text-xs">
+              <Gamepad2 className="w-4 h-4 text-indigo-400" />
+              <span className="text-neutral-400">Host Jogando:</span>
+              <span className="text-indigo-300 font-bold">{hostNickname}</span>
+              <span className="text-emerald-400 font-mono font-bold">({hostPlayer?.score || 0} pts)</span>
+            </div>
+          )}
+
           <div className="bg-neutral-800/90 px-5 py-2 rounded-xl border border-neutral-700 text-center">
             <p className="text-[10px] text-neutral-400 uppercase tracking-widest font-extrabold">PIN DA SALA</p>
             <p className="text-2xl font-black tracking-widest text-indigo-400 font-mono">{gameId}</p>
@@ -888,30 +1013,93 @@ export default function Host() {
 
             {/* Right: Connected Players & Launch Button */}
             <div className="bg-neutral-800/90 p-6 rounded-3xl border border-neutral-700 shadow-xl flex flex-col">
-              <div className="flex justify-between items-center mb-4">
+              <div className="flex justify-between items-center mb-3">
                 <h2 className="text-xl font-bold flex items-center gap-2">
                   <Users className="w-5 h-5 text-emerald-400" />
-                  Alunos Conectados ({players.length})
+                  Participantes ({players.length})
                 </h2>
               </div>
 
-              <div className="flex-1 overflow-y-auto space-y-2 mb-6 max-h-[380px] custom-scrollbar">
+              {/* Host Participation Toggle */}
+              <div className="bg-neutral-900/90 border border-neutral-700 p-3.5 rounded-2xl mb-4 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Gamepad2 className="w-4 h-4 text-indigo-400" />
+                    <span className="text-xs font-bold text-neutral-200">Jogar também nesta sessão</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => toggleHostParticipation(!hostPlays)}
+                    className={cn(
+                      "px-2.5 py-1 rounded-full text-[11px] font-black transition-all cursor-pointer",
+                      hostPlays 
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                        : "bg-neutral-800 text-neutral-400 hover:text-neutral-200 border border-neutral-700"
+                    )}
+                  >
+                    {hostPlays ? "✓ Ativado (Host joga)" : "Desativado"}
+                  </button>
+                </div>
+
+                {hostPlays && (
+                  <div>
+                    <label className="block text-[10px] uppercase font-bold text-neutral-400 mb-1">
+                      Seu Nome no Placar:
+                    </label>
+                    <input
+                      type="text"
+                      value={hostNickname}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setHostNickname(val);
+                        toggleHostParticipation(true, val);
+                      }}
+                      placeholder="Nome no ranking"
+                      className="w-full bg-neutral-950 border border-neutral-700 focus:border-indigo-500 rounded-lg px-3 py-1.5 text-xs text-white font-semibold outline-none"
+                      maxLength={30}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-2 mb-6 max-h-[340px] custom-scrollbar">
                 {players.length === 0 ? (
-                  <div className="text-center py-12 text-neutral-500 space-y-2">
-                    <p className="text-sm font-medium">Aguardando os alunos entrarem...</p>
+                  <div className="text-center py-10 text-neutral-500 space-y-2">
+                    <p className="text-sm font-medium">Aguardando participantes...</p>
                     <p className="text-xs">Peça para os alunos abrirem o link e informarem o PIN:</p>
                     <p className="text-2xl font-black font-mono text-indigo-400 tracking-widest">{gameId}</p>
                   </div>
                 ) : (
-                  players.map((p, idx) => (
-                    <div key={p.id || idx} className="bg-neutral-750 px-4 py-3 rounded-xl font-semibold flex justify-between items-center border border-neutral-700">
-                      <div className="flex items-center gap-2">
-                        <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></div>
-                        <span className="text-neutral-100">{p.name}</span>
+                  players.map((p, idx) => {
+                    const isHost = p.id === auth.currentUser?.uid;
+                    return (
+                      <div
+                        key={p.id || idx}
+                        className={cn(
+                          "px-4 py-3 rounded-xl font-semibold flex justify-between items-center border transition-all",
+                          isHost
+                            ? "bg-indigo-950/60 border-indigo-500/50 shadow-sm"
+                            : "bg-neutral-750 border-neutral-700"
+                        )}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div className={cn(
+                            "w-2 h-2 rounded-full animate-pulse",
+                            isHost ? "bg-indigo-400" : "bg-emerald-400"
+                          )}></div>
+                          <span className={cn(isHost ? "text-indigo-200 font-bold" : "text-neutral-100")}>
+                            {p.name}
+                          </span>
+                          {isHost && (
+                            <span className="text-[10px] bg-indigo-600 text-white font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
+                              Você (Host)
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-indigo-400 font-mono font-bold text-sm">{p.score} pts</span>
                       </div>
-                      <span className="text-indigo-400 font-mono font-bold text-sm">{p.score} pts</span>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
@@ -932,10 +1120,10 @@ export default function Host() {
           </div>
         )}
 
-        {/* QUESTION VIEW (Teacher Screen) */}
+        {/* QUESTION VIEW (Teacher & Host Screen) */}
         {gameState.status === 'question' && currentQ && (
-          <div className="flex-1 flex flex-col justify-between py-6 max-w-5xl mx-auto w-full">
-            <div className="text-center space-y-4">
+          <div className="flex-1 flex flex-col justify-between py-4 max-w-5xl mx-auto w-full space-y-6">
+            <div className="text-center space-y-3">
               <div className="inline-flex items-center gap-2 bg-neutral-800 px-4 py-1.5 rounded-full border border-neutral-700">
                 <span className="text-xs font-black text-indigo-400 uppercase tracking-widest">
                   Questão {gameState.currentQuestionIndex + 1} de {questions.length}
@@ -946,29 +1134,150 @@ export default function Host() {
                 </span>
               </div>
 
-              <h2 className="text-3xl md:text-5xl font-black text-neutral-50 leading-tight">
+              <h2 className="text-2xl md:text-4xl font-black text-neutral-50 leading-tight">
                 {currentQ.prompt}
               </h2>
             </div>
 
-            {/* Timer & Live Count */}
-            <div className="my-10 flex flex-col items-center justify-center gap-6">
-              <div className="w-40 h-40 rounded-full border-8 border-neutral-800 flex items-center justify-center relative shadow-2xl bg-neutral-950">
-                <span className="text-6xl font-black text-indigo-400 font-mono">{timeLeft}</span>
+            {/* Grid: Timer on Left, Host Answer Box on Right */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-stretch">
+              {/* Timer & Controls */}
+              <div className="bg-neutral-800/90 p-6 rounded-3xl border border-neutral-700 flex flex-col items-center justify-between text-center space-y-4 shadow-xl">
+                <div className="space-y-3 flex flex-col items-center">
+                  <div className="w-32 h-32 rounded-full border-8 border-neutral-800 flex items-center justify-center relative shadow-2xl bg-neutral-950">
+                    <span className={cn(
+                      "text-5xl font-black font-mono",
+                      timeLeft <= 10 ? "text-red-400 animate-pulse" : "text-indigo-400"
+                    )}>
+                      {timeLeft}
+                    </span>
+                  </div>
+
+                  <div className="bg-neutral-900 px-3.5 py-1.5 rounded-xl border border-neutral-750 flex items-center gap-2 text-xs">
+                    <div className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-pulse"></div>
+                    <span className="font-bold text-neutral-200">
+                      {players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== '').length} / {players.length} já responderam
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={forceRevealAnswer}
+                  className="w-full bg-neutral-750 hover:bg-neutral-700 text-neutral-200 hover:text-white font-bold text-xs py-2.5 rounded-xl transition-all border border-neutral-600 flex items-center justify-center gap-1.5 cursor-pointer shadow"
+                >
+                  <FastForward className="w-4 h-4 text-amber-400" />
+                  Encerrar Tempo Agora
+                </button>
               </div>
 
-              <div className="bg-neutral-800/80 px-6 py-3 rounded-2xl border border-neutral-700 flex items-center gap-3">
-                <div className="w-3 h-3 rounded-full bg-indigo-500 animate-pulse"></div>
-                <span className="font-bold text-neutral-200">
-                  {players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== '').length} / {players.length} Alunos já responderam
-                </span>
+              {/* Host Player Interactive Area */}
+              <div className="lg:col-span-2 bg-neutral-800/90 p-6 rounded-3xl border border-neutral-700 shadow-xl space-y-4 flex flex-col justify-between">
+                {hostPlays ? (
+                  <>
+                    <div className="flex items-center justify-between border-b border-neutral-700 pb-3">
+                      <div className="flex items-center gap-2">
+                        <Gamepad2 className="w-5 h-5 text-indigo-400" />
+                        <h3 className="font-bold text-base text-neutral-100">
+                          Sua Resposta como Host ({hostNickname})
+                        </h3>
+                      </div>
+                      <span className="text-[10px] uppercase tracking-wider font-bold bg-indigo-950 text-indigo-300 px-2 py-0.5 rounded-full border border-indigo-800">
+                        Jogando ao Vivo
+                      </span>
+                    </div>
+
+                    {hostPlayer?.currentAnswer ? (
+                      <div className="bg-neutral-900 p-5 rounded-2xl border border-emerald-500/30 text-center space-y-2.5 my-auto">
+                        <div className="w-12 h-12 bg-emerald-500/20 border border-emerald-500/40 rounded-full flex items-center justify-center mx-auto text-emerald-400">
+                          <CheckCircle2 className="w-7 h-7" />
+                        </div>
+                        <p className="font-bold text-base text-neutral-100">Sua resposta foi enviada com sucesso!</p>
+                        <p className="text-sm text-neutral-200 italic bg-neutral-950 p-3 rounded-xl border border-neutral-800 text-left">
+                          "{hostPlayer.currentAnswer}"
+                        </p>
+                        <p className="text-xs text-neutral-500">
+                          Aguardando os demais participantes ou encerramento do tempo para ver o gabarito.
+                        </p>
+                      </div>
+                    ) : (
+                      <form onSubmit={handleSubmitHostAnswer} className="space-y-4 flex-1 flex flex-col justify-between">
+                        {currentQ.type === 'fill_blank' ? (
+                          <div className="space-y-1">
+                            <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400">
+                              Complete o termo da lacuna:
+                            </label>
+                            <input
+                              type="text"
+                              value={hostAnswerText}
+                              onChange={(e) => setHostAnswerText(e.target.value)}
+                              placeholder="Digite a palavra ou termo que preenche a lacuna..."
+                              disabled={isSubmittingHost}
+                              className="w-full bg-neutral-900 border-2 border-neutral-700 focus:border-indigo-500 rounded-xl p-3.5 text-sm font-semibold text-white placeholder-neutral-500 outline-none transition-colors"
+                            />
+                          </div>
+                        ) : (
+                          <div className="space-y-1 flex-1 flex flex-col">
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400">
+                                Sua Resposta Dissertativa:
+                              </label>
+                              <span className="text-[11px] text-neutral-500 font-mono">
+                                {hostAnswerText.trim().split(/\s+/).filter(Boolean).length} palavras
+                              </span>
+                            </div>
+                            <textarea
+                              value={hostAnswerText}
+                              onChange={(e) => setHostAnswerText(e.target.value)}
+                              placeholder="Escreva sua resposta conceitual com suas próprias palavras..."
+                              rows={4}
+                              disabled={isSubmittingHost}
+                              className="w-full flex-1 bg-neutral-900 border-2 border-neutral-700 focus:border-indigo-500 rounded-xl p-3.5 text-sm text-white placeholder-neutral-500 outline-none transition-colors leading-relaxed"
+                            />
+                          </div>
+                        )}
+
+                        <button
+                          type="submit"
+                          disabled={isSubmittingHost || !hostAnswerText.trim()}
+                          className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-750 disabled:text-neutral-500 text-white font-black text-sm py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+                        >
+                          {isSubmittingHost ? (
+                            <>
+                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                              <span>Avaliando semântica com embeddings locais...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Send className="w-4 h-4" />
+                              ENVIAR MINHA RESPOSTA (HOST)
+                            </>
+                          )}
+                        </button>
+                      </form>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center py-10 space-y-3 my-auto">
+                    <p className="text-neutral-300 font-bold text-sm">Modo Apenas Observador</p>
+                    <p className="text-xs text-neutral-500 max-w-md mx-auto">
+                      Você optou por não participar como jogador nesta questão. Os participantes estão respondendo individualmente.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => toggleHostParticipation(true)}
+                      className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all cursor-pointer inline-flex items-center gap-1.5 shadow"
+                    >
+                      <Gamepad2 className="w-4 h-4" />
+                      Entrar para Jogar Também
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
 
-            <div className="bg-neutral-800/60 p-5 rounded-2xl border border-neutral-700/60 text-center">
-              <p className="text-sm text-neutral-400">
-                Os alunos estão digitando as respostas. A correção semântica é computada automaticamente.
-              </p>
+            <div className="bg-neutral-800/60 p-3.5 rounded-2xl border border-neutral-700/60 text-center text-xs text-neutral-400">
+              Correção automática determinística + embeddings de sentenças rodando localmente no navegador.
             </div>
           </div>
         )}
@@ -1026,24 +1335,75 @@ export default function Host() {
               </div>
             </div>
 
+            {/* Host's Own Result Card if Host Played */}
+            {hostPlays && hostPlayer?.lastGradingResult && (
+              <div className="bg-neutral-800/90 p-5 rounded-3xl border border-indigo-500/50 shadow-xl space-y-3">
+                <div className="flex items-center justify-between border-b border-neutral-700/80 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Gamepad2 className="w-5 h-5 text-indigo-400" />
+                    <h3 className="text-sm font-bold text-indigo-200">
+                      Seu Resultado como Host ({hostNickname})
+                    </h3>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-emerald-400">
+                    +{hostPlayer.lastScoreAdded || 0} pts nesta questão
+                  </span>
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-neutral-900 p-4 rounded-xl border border-neutral-750">
+                  <div className="space-y-1 max-w-xl">
+                    <span className="text-[10px] uppercase font-bold text-neutral-400 block">Sua Resposta:</span>
+                    <p className="text-sm text-neutral-200 italic">"{hostPlayer.currentAnswer}"</p>
+                    {hostPlayer.lastGradingResult?.details?.reason && (
+                      <p className="text-xs text-neutral-400">{hostPlayer.lastGradingResult.details.reason}</p>
+                    )}
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-2xl font-black font-mono text-emerald-400">
+                      {Math.round((hostPlayer.lastGradingResult?.score || 0) * 100)}%
+                    </span>
+                    <span className="text-[10px] block uppercase font-bold text-neutral-400">
+                      {hostPlayer.lastGradingResult?.mode === 'exact' ? 'Exato' :
+                       hostPlayer.lastGradingResult?.mode === 'lexical' ? 'Léxico' :
+                       hostPlayer.lastGradingResult?.mode === 'semantic' ? 'Semântico' : 'Incorreto'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Live Student Responses Grading Table */}
             <div className="bg-neutral-800/90 p-6 rounded-3xl border border-neutral-700 shadow-xl space-y-4">
               <h3 className="text-base font-bold text-neutral-200 flex items-center justify-between">
-                <span>Respostas dos Alunos & Correção Automática</span>
+                <span>Respostas dos Participantes & Correção Automática</span>
                 <span className="text-xs font-normal text-neutral-400">{players.length} avaliações</span>
               </h3>
 
               <div className="space-y-3 max-h-[320px] overflow-y-auto pr-2 custom-scrollbar">
                 {players.map((p) => {
+                  const isHost = p.id === auth.currentUser?.uid;
                   const res = p.lastGradingResult;
                   const scorePct = res ? Math.round(res.score * 100) : 0;
                   const mode = res?.mode || 'none';
 
                   return (
-                    <div key={p.id} className="bg-neutral-900 p-4 rounded-xl border border-neutral-750 flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                    <div
+                      key={p.id}
+                      className={cn(
+                        "p-4 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-3 transition-all",
+                        isHost ? "bg-indigo-950/40 border-indigo-500/50" : "bg-neutral-900 border-neutral-750"
+                      )}
+                    >
                       <div className="space-y-1 max-w-xl">
                         <div className="flex items-center gap-2">
-                          <span className="font-bold text-neutral-200 text-sm">{p.name}</span>
+                          <span className={cn("font-bold text-sm", isHost ? "text-indigo-200" : "text-neutral-200")}>
+                            {p.name}
+                          </span>
+                          {isHost && (
+                            <span className="text-[10px] bg-indigo-600 text-white font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
+                              Host (Você)
+                            </span>
+                          )}
                           <span className={cn(
                             "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider",
                             mode === 'exact' ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" :
@@ -1093,29 +1453,56 @@ export default function Host() {
 
         {/* LEADERBOARD VIEW */}
         {gameState.status === 'leaderboard' && currentQ && (
-          <div className="flex-1 flex flex-col items-center justify-center max-w-2xl mx-auto w-full">
-            <div className="flex items-center gap-3 mb-8">
+          <div className="flex-1 flex flex-col items-center justify-center max-w-2xl mx-auto w-full py-4">
+            <div className="flex items-center gap-3 mb-6">
               <Trophy className="w-10 h-10 text-amber-400" />
               <h2 className="text-3xl font-black">Quadro de Líderes</h2>
             </div>
 
-            <div className="w-full space-y-3 mb-8">
-              {players.slice(0, 5).map((p, i) => (
-                <div key={p.id} className="bg-neutral-800/90 p-5 rounded-2xl flex items-center justify-between border border-neutral-700">
-                  <div className="flex items-center gap-4">
-                    <span className={cn(
-                      "w-8 h-8 rounded-full flex items-center justify-center font-black text-sm",
-                      i === 0 ? "bg-amber-400 text-neutral-950" :
-                      i === 1 ? "bg-neutral-300 text-neutral-950" :
-                      i === 2 ? "bg-amber-600 text-white" : "bg-neutral-700 text-neutral-400"
-                    )}>
-                      {i + 1}
-                    </span>
-                    <span className="text-xl font-bold text-neutral-100">{p.name}</span>
+            <div className="w-full space-y-2.5 mb-8 max-h-[460px] overflow-y-auto pr-1 custom-scrollbar">
+              {players.map((p, i) => {
+                const isHost = p.id === auth.currentUser?.uid;
+                return (
+                  <div
+                    key={p.id}
+                    className={cn(
+                      "p-4 rounded-2xl flex items-center justify-between border transition-all",
+                      isHost
+                        ? "bg-indigo-950/70 border-indigo-500/60 shadow-md ring-1 ring-indigo-500/30"
+                        : "bg-neutral-800/90 border-neutral-700"
+                    )}
+                  >
+                    <div className="flex items-center gap-4">
+                      <span className={cn(
+                        "w-8 h-8 rounded-full flex items-center justify-center font-black text-sm shrink-0",
+                        i === 0 ? "bg-amber-400 text-neutral-950" :
+                        i === 1 ? "bg-neutral-300 text-neutral-950" :
+                        i === 2 ? "bg-amber-600 text-white" : "bg-neutral-700 text-neutral-400"
+                      )}>
+                        {i + 1}
+                      </span>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className={cn("text-lg font-bold", isHost ? "text-indigo-200 font-black" : "text-neutral-100")}>
+                            {p.name}
+                          </span>
+                          {isHost && (
+                            <span className="text-[10px] bg-indigo-600 text-white font-black px-2 py-0.5 rounded-full uppercase tracking-wider">
+                              Você (Host)
+                            </span>
+                          )}
+                        </div>
+                        {p.lastScoreAdded !== undefined && p.lastScoreAdded > 0 && (
+                          <span className="text-xs text-emerald-400 font-mono font-medium">
+                            +{p.lastScoreAdded} pts nesta rodada
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <span className="text-xl font-black text-indigo-400 font-mono">{p.score} pts</span>
                   </div>
-                  <span className="text-xl font-black text-indigo-400 font-mono">{p.score} pts</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <button
@@ -1167,6 +1554,37 @@ export default function Host() {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Complete Final Ranking Table on Podium Screen */}
+            <div className="w-full max-w-xl bg-neutral-800/90 p-5 rounded-3xl border border-neutral-700 shadow-xl space-y-3 mb-8">
+              <h3 className="text-sm font-bold text-neutral-200 flex items-center justify-between border-b border-neutral-700 pb-2">
+                <span>Classificação Geral da Sessão</span>
+                <span className="text-xs text-neutral-400 font-mono">{players.length} participantes</span>
+              </h3>
+
+              <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1 custom-scrollbar">
+                {players.map((p, idx) => {
+                  const isHost = p.id === auth.currentUser?.uid;
+                  return (
+                    <div
+                      key={p.id || idx}
+                      className={cn(
+                        "p-3 rounded-xl flex items-center justify-between border text-sm transition-all",
+                        isHost ? "bg-indigo-950/60 border-indigo-500/60 font-bold" : "bg-neutral-900 border-neutral-750"
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="font-mono font-bold text-neutral-400 w-6">#{idx + 1}</span>
+                        <span className={isHost ? "text-indigo-200 font-black" : "text-neutral-200"}>
+                          {p.name} {isHost && '(Você - Host)'}
+                        </span>
+                      </div>
+                      <span className="font-mono font-bold text-neutral-100">{p.score} pts</span>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
 
             <button

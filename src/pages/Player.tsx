@@ -538,64 +538,172 @@ export default function Player() {
 
         {/* LEADERBOARD VIEW */}
         {status === 'leaderboard' && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
-            <div className={cn(
-              "w-24 h-24 rounded-full flex items-center justify-center mx-auto shadow-2xl",
-              playerState?.lastAnswerCorrect ? "bg-emerald-500/20 border-2 border-emerald-400" : "bg-red-500/20 border-2 border-red-400"
-            )}>
-              {playerState?.lastAnswerCorrect ? (
-                <CheckCircle2 className="w-14 h-14 text-emerald-400" />
-              ) : (
-                <XCircle className="w-14 h-14 text-red-400" />
-              )}
+          <div className="flex-1 flex flex-col space-y-4 py-2 max-w-xl mx-auto w-full animate-in fade-in duration-300">
+            {/* Top result summary card */}
+            <div className="bg-neutral-800/90 p-4 rounded-2xl border border-neutral-700 shadow-xl space-y-3">
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 shadow-lg",
+                  playerState?.lastAnswerCorrect ? "bg-emerald-500/20 border border-emerald-500/40 text-emerald-400" : "bg-red-500/20 border border-red-500/40 text-red-400"
+                )}>
+                  {playerState?.lastAnswerCorrect ? (
+                    <CheckCircle2 className="w-7 h-7" />
+                  ) : (
+                    <XCircle className="w-7 h-7" />
+                  )}
+                </div>
+                <div className="flex-1">
+                  <h2 className="text-lg font-black text-neutral-100">
+                    {playerState?.lastAnswerCorrect ? 'Pontuação Registrada!' : 'Resposta Incompleta ou Incorreta'}
+                  </h2>
+                  <p className="text-xs font-semibold text-neutral-400">
+                    Nesta questão: <span className="text-indigo-400 font-mono font-bold text-sm">+{playerState?.lastScoreAdded || 0} pts</span>
+                  </p>
+                </div>
+                <div className="text-right bg-neutral-900/80 px-3.5 py-1.5 rounded-xl border border-neutral-750">
+                  <span className="text-[10px] uppercase font-bold text-neutral-400 block">Sua Posição</span>
+                  <span className="text-base font-black text-amber-400">
+                    {players.findIndex(p => p.id === playerId) >= 0 ? `${players.findIndex(p => p.id === playerId) + 1}º` : '-'}
+                    <span className="text-xs font-normal text-neutral-400"> / {players.length}</span>
+                  </span>
+                </div>
+              </div>
             </div>
 
-            <div className="space-y-1">
-              <h2 className="text-3xl font-black">
-                {playerState?.lastAnswerCorrect ? 'Pontuação Registrada!' : 'Mais sorte na próxima!'}
-              </h2>
-              <p className="text-indigo-400 font-mono font-bold text-xl">
-                +{playerState?.lastScoreAdded || 0} pts
+            {/* LIVE LEADERBOARD / PLACAR DA SALA */}
+            <div className="bg-neutral-800/90 p-5 rounded-3xl border border-neutral-700 shadow-xl space-y-3 flex-1 flex flex-col">
+              <div className="flex items-center justify-between border-b border-neutral-700/80 pb-3">
+                <h3 className="text-base font-black text-neutral-100 flex items-center gap-2">
+                  <Trophy className="w-5 h-5 text-amber-400" />
+                  Ranking da Sala ({players.length} participantes)
+                </h3>
+                <span className="text-[11px] font-bold text-indigo-400 bg-indigo-950/80 px-2.5 py-0.5 rounded-full border border-indigo-800">
+                  Ao Vivo
+                </span>
+              </div>
+
+              <div className="space-y-2 overflow-y-auto max-h-[380px] pr-1 custom-scrollbar flex-1">
+                {players.map((p, idx) => {
+                  const isMe = p.id === playerId;
+                  return (
+                    <div
+                      key={p.id || idx}
+                      className={cn(
+                        "p-3 rounded-xl flex items-center justify-between border transition-all",
+                        isMe
+                          ? "bg-indigo-950/60 border-indigo-500 shadow-md shadow-indigo-600/10 ring-1 ring-indigo-400/40"
+                          : "bg-neutral-900/80 border-neutral-750"
+                      )}
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className={cn(
+                          "w-7 h-7 rounded-lg flex items-center justify-center font-black text-xs shrink-0",
+                          idx === 0 ? "bg-amber-400 text-neutral-950 font-bold" :
+                          idx === 1 ? "bg-neutral-300 text-neutral-950 font-bold" :
+                          idx === 2 ? "bg-amber-600 text-white font-bold" :
+                          "bg-neutral-800 text-neutral-400 border border-neutral-700"
+                        )}>
+                          {idx === 0 ? "1º" : idx === 1 ? "2º" : idx === 2 ? "3º" : `${idx + 1}º`}
+                        </span>
+
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className={cn("font-bold text-sm", isMe ? "text-indigo-200 font-black" : "text-neutral-200")}>
+                              {p.name}
+                            </span>
+                            {isMe && (
+                              <span className="text-[9px] bg-indigo-600 text-white font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
+                                Você
+                              </span>
+                            )}
+                          </div>
+                          {p.lastScoreAdded !== undefined && p.lastScoreAdded > 0 && (
+                            <span className="text-[11px] text-emerald-400 font-mono font-medium block">
+                              +{p.lastScoreAdded} pts nesta rodada
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <span className={cn(
+                          "text-base font-black font-mono block",
+                          isMe ? "text-indigo-300" : "text-neutral-100"
+                        )}>
+                          {p.score} pts
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="text-center text-xs text-neutral-500 pt-1">
+                Aguarde o professor avançar para a próxima questão na tela principal.
               </p>
             </div>
-
-            <div className="bg-neutral-800/80 px-6 py-3 rounded-2xl border border-neutral-700">
-              <span className="text-xs text-neutral-400 block">Sua pontuação total</span>
-              <span className="text-3xl font-black font-mono text-neutral-100">{playerState?.score || 0} pts</span>
-            </div>
-
-            <p className="text-xs text-neutral-500">Olhe para a tela principal para ver a próxima questão.</p>
           </div>
         )}
 
         {/* PODIUM VIEW */}
         {status === 'podium' && (
-          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-6">
-            <Trophy className="w-24 h-24 text-amber-400 animate-bounce" />
-            <h2 className="text-3xl font-black">Fim da Sessão de Treino!</h2>
+          <div className="flex-1 flex flex-col space-y-6 py-4 max-w-xl mx-auto w-full animate-in fade-in duration-300">
+            <div className="text-center space-y-2">
+              <Trophy className="w-14 h-14 text-amber-400 mx-auto animate-bounce" />
+              <h2 className="text-2xl font-black">Fim da Sessão de Treino!</h2>
+            </div>
 
             {players.findIndex(p => p.id === playerId) === 0 ? (
-              <div className="bg-amber-400/20 border-2 border-amber-400 p-6 rounded-3xl">
+              <div className="bg-amber-400/20 border-2 border-amber-400 p-6 rounded-3xl text-center">
                 <p className="text-xl font-bold text-amber-300 mb-1">1º Lugar! Campeão 🥇</p>
                 <p className="text-4xl font-black text-amber-400">{playerState?.score || 0} pts</p>
               </div>
             ) : players.findIndex(p => p.id === playerId) === 1 ? (
-              <div className="bg-neutral-300/20 border-2 border-neutral-300 p-6 rounded-3xl">
+              <div className="bg-neutral-300/20 border-2 border-neutral-300 p-6 rounded-3xl text-center">
                 <p className="text-xl font-bold text-neutral-200 mb-1">2º Lugar! Prata 🥈</p>
                 <p className="text-4xl font-black text-neutral-200">{playerState?.score || 0} pts</p>
               </div>
             ) : players.findIndex(p => p.id === playerId) === 2 ? (
-              <div className="bg-amber-700/20 border-2 border-amber-600 p-6 rounded-3xl">
+              <div className="bg-amber-700/20 border-2 border-amber-600 p-6 rounded-3xl text-center">
                 <p className="text-xl font-bold text-amber-400 mb-1">3º Lugar! Bronze 🥉</p>
                 <p className="text-4xl font-black text-amber-400">{playerState?.score || 0} pts</p>
               </div>
             ) : (
-              <div className="bg-neutral-800 p-6 rounded-3xl border border-neutral-700">
+              <div className="bg-neutral-800 p-6 rounded-3xl border border-neutral-700 text-center">
                 <p className="text-sm text-neutral-400 mb-1">Sua Classificação:</p>
                 <p className="text-3xl font-black text-indigo-400">#{players.findIndex(p => p.id === playerId) + 1} de {players.length}</p>
                 <p className="text-lg font-bold text-neutral-300 mt-2">{playerState?.score || 0} pts</p>
               </div>
             )}
+
+            {/* FULL FINAL RANKING ON PLAYER SCREEN */}
+            <div className="bg-neutral-800/90 p-5 rounded-3xl border border-neutral-700 shadow-xl space-y-3">
+              <h3 className="text-sm font-bold text-neutral-200 flex items-center justify-between border-b border-neutral-700 pb-2">
+                <span>Classificação Final de Todos os Participantes</span>
+                <span className="text-xs text-neutral-400">{players.length} jogadores</span>
+              </h3>
+
+              <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1 custom-scrollbar">
+                {players.map((p, idx) => {
+                  const isMe = p.id === playerId;
+                  return (
+                    <div
+                      key={p.id || idx}
+                      className={cn(
+                        "p-2.5 rounded-xl flex items-center justify-between border text-xs",
+                        isMe ? "bg-indigo-950/60 border-indigo-500 font-bold" : "bg-neutral-900/80 border-neutral-750"
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono font-bold text-neutral-400 w-5">#{idx + 1}</span>
+                        <span className={isMe ? "text-indigo-300 font-bold" : "text-neutral-200"}>{p.name} {isMe && '(Você)'}</span>
+                      </div>
+                      <span className="font-mono font-bold text-neutral-100">{p.score} pts</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         )}
 
