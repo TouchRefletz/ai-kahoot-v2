@@ -7,13 +7,14 @@ import { computeEmbedding } from '../lib/embeddings';
 import { gradeShortAnswerAsync } from '../lib/grading';
 import { Question, QuestionType, PlayerData } from '../lib/types';
 import {
-  extractJsonFromText, sanitizeQuestions, generateExternalAIPrompt
+  extractJsonFromText, sanitizeQuestions, generateExternalAIPrompt, TopicBreakdownItem
 } from '../lib/parser';
 import {
   Upload, FileText, Trash2, Play, Users, BrainCircuit, CheckCircle2,
   Copy, Check, Download, Sparkles, PlusCircle, AlertCircle, ChevronRight,
   Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers,
-  Gamepad2, Send, Clock, FastForward, Medal
+  Gamepad2, Send, Clock, FastForward, Medal, Sliders, Edit3, Plus, Minus,
+  RotateCcw, Award
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
@@ -26,8 +27,13 @@ export default function Host() {
   const [activeTab, setActiveTab] = useState<'prompt_builder' | 'import' | 'manual'>('prompt_builder');
 
   // Prompt Generator State
+  const [promptTopicMode, setPromptTopicMode] = useState<'breakdown' | 'single'>('breakdown');
   const [topic, setTopic] = useState('Biologia Celular: Estrutura da Membrana Plasmática e Transporte Celular');
   const [numQuestions, setNumQuestions] = useState(6);
+  const [topicBreakdown, setTopicBreakdown] = useState<TopicBreakdownItem[]>([
+    { id: '1', topic: 'Estrutura da Membrana Plasmática e Transporte Celular', count: 5 },
+    { id: '2', topic: 'Respiração Celular e Síntese de ATP', count: 5 }
+  ]);
   const [difficulty, setDifficulty] = useState('Ensino Médio / Vestibular');
   const [typeDistribution, setTypeDistribution] = useState('50% resposta curta e 50% preenchimento de lacunas');
   const [customPromptNotes, setCustomPromptNotes] = useState('');
@@ -61,12 +67,25 @@ export default function Host() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [timeLeft, setTimeLeft] = useState<number>(0);
 
+  // Question Time Configuration State
+  const [suggestedTimeLimit, setSuggestedTimeLimit] = useState<number>(45);
+  const [bulkTimeInput, setBulkTimeInput] = useState<number>(45);
+  const [editingTimeQId, setEditingTimeQId] = useState<string | null>(null);
+  const [tempTimeValue, setTempTimeValue] = useState<number>(45);
+
+  // Score Adjustment in Answer Reveal State
+  const [editingScorePlayerId, setEditingScorePlayerId] = useState<string | null>(null);
+  const [scoreAdjustmentPoints, setScoreAdjustmentPoints] = useState<number>(0);
+  const [scoreAdjustmentReason, setScoreAdjustmentReason] = useState<string>('');
+  const [isSavingScoreAdjustment, setIsSavingScoreAdjustment] = useState<boolean>(false);
+
   // Host as Player State
   const [hostPlays, setHostPlays] = useState<boolean>(true);
   const [hostNickname, setHostNickname] = useState<string>(
     auth.currentUser?.displayName ? `Host (${auth.currentUser.displayName})` : 'Host'
   );
   const [hostAnswerText, setHostAnswerText] = useState('');
+  const [hostSubmitted, setHostSubmitted] = useState(false);
   const [isSubmittingHost, setIsSubmittingHost] = useState(false);
   const [hostGradingResult, setHostGradingResult] = useState<any>(null);
 
@@ -286,14 +305,74 @@ export default function Host() {
     }
   }, [gameState?.status, gameState?.questionStartTime, gameState?.currentQuestionIndex, questions, gameId, players]);
 
+  const totalQuestions = promptTopicMode === 'breakdown'
+    ? topicBreakdown.reduce((sum, item) => sum + (Number(item.count) || 0), 0)
+    : Math.max(1, Number(numQuestions) || 1);
+
   // Generate the formatted prompt to copy
   const generatedPrompt = generateExternalAIPrompt({
-    topic,
-    numQuestions,
+    topic: promptTopicMode === 'single' ? topic : 'Tópicos Personalizados Multi-Assunto',
+    numQuestions: totalQuestions,
     difficulty,
     typeDistribution,
-    customInstructions: customPromptNotes.trim()
+    customInstructions: customPromptNotes.trim(),
+    suggestedTimeLimit,
+    topicBreakdown: promptTopicMode === 'breakdown' ? topicBreakdown : undefined
   });
+
+  const handleAddTopicRow = () => {
+    setTopicBreakdown(prev => [
+      ...prev,
+      { id: Date.now().toString(), topic: '', count: 5 }
+    ]);
+  };
+
+  const handleUpdateTopicRow = (index: number, field: 'topic' | 'count', value: string | number) => {
+    setTopicBreakdown(prev => {
+      const copy = [...prev];
+      if (field === 'count') {
+        copy[index] = { ...copy[index], count: Math.max(1, Math.min(50, Number(value) || 1)) };
+      } else {
+        copy[index] = { ...copy[index], topic: String(value) };
+      }
+      return copy;
+    });
+  };
+
+  const handleRemoveTopicRow = (index: number) => {
+    if (topicBreakdown.length <= 1) {
+      alert('Mantenha pelo menos um tópico na lista.');
+      return;
+    }
+    setTopicBreakdown(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const handleApplyPresetBreakdown = (preset: '5_5' | '5_5_5' | '3_3_3_3' | '10_10') => {
+    if (preset === '5_5') {
+      setTopicBreakdown([
+        { id: '1', topic: 'Primeiro Tópico / Módulo', count: 5 },
+        { id: '2', topic: 'Segundo Tópico / Módulo', count: 5 }
+      ]);
+    } else if (preset === '5_5_5') {
+      setTopicBreakdown([
+        { id: '1', topic: 'Módulo 1 / Conceitos Iniciais', count: 5 },
+        { id: '2', topic: 'Módulo 2 / Aplicação Prática', count: 5 },
+        { id: '3', topic: 'Módulo 3 / Análise e Síntese', count: 5 }
+      ]);
+    } else if (preset === '3_3_3_3') {
+      setTopicBreakdown([
+        { id: '1', topic: 'Tema 1', count: 3 },
+        { id: '2', topic: 'Tema 2', count: 3 },
+        { id: '3', topic: 'Tema 3', count: 3 },
+        { id: '4', topic: 'Tema 4', count: 3 }
+      ]);
+    } else if (preset === '10_10') {
+      setTopicBreakdown([
+        { id: '1', topic: 'Primeiro Grande Tema', count: 10 },
+        { id: '2', topic: 'Segundo Grande Tema', count: 10 }
+      ]);
+    }
+  };
 
   const handleCopyPrompt = () => {
     navigator.clipboard.writeText(generatedPrompt);
@@ -571,6 +650,150 @@ export default function Host() {
     }
   };
 
+  // --- QUESTION TIME LIMIT CONTROLS ---
+  const handleUpdateQuestionTime = async (questionId: string, newSeconds: number) => {
+    if (!gameId || !questionId) return;
+    const safeSeconds = Math.max(5, Math.min(300, newSeconds));
+    try {
+      await updateDoc(doc(db, `games/${gameId}/questions`, questionId), {
+        timeLimit: safeSeconds
+      });
+      setEditingTimeQId(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}/questions/${questionId}`);
+    }
+  };
+
+  const handleApplyBulkTimeToAll = async (seconds: number) => {
+    if (!gameId || questions.length === 0) return;
+    const safeSeconds = Math.max(5, Math.min(300, seconds));
+    try {
+      const batch = writeBatch(db);
+      questions.forEach(q => {
+        if (q.id) {
+          batch.update(doc(db, `games/${gameId}/questions`, q.id), {
+            timeLimit: safeSeconds
+          });
+        }
+      });
+      await batch.commit();
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}/questions`);
+    }
+  };
+
+  const handleAdjustLiveTime = async (secondsDelta: number) => {
+    if (!gameId || !gameState) return;
+    const currentQuestion = questions[gameState.currentQuestionIndex];
+    if (!currentQuestion || !currentQuestion.id) return;
+
+    const currentLimit = currentQuestion.timeLimit || 45;
+    const newLimit = Math.max(5, currentLimit + secondsDelta);
+
+    try {
+      await updateDoc(doc(db, `games/${gameId}/questions`, currentQuestion.id), {
+        timeLimit: newLimit
+      });
+    } catch (err) {
+      console.error('Erro ao ajustar tempo da questão:', err);
+    }
+  };
+
+  // --- SCORE ADJUSTMENT CONTROLS (BEFORE NEXT QUESTION) ---
+  const handleStartEditScore = (player: PlayerData) => {
+    setEditingScorePlayerId(player.id || null);
+    setScoreAdjustmentPoints(player.lastScoreAdded ?? 0);
+    setScoreAdjustmentReason(player.lastGradingResult?.details?.reason || '');
+  };
+
+  const handleAdjustPlayerScore = async (player: PlayerData, newPoints: number, customReason?: string) => {
+    if (!gameId || !player.id) return;
+    setIsSavingScoreAdjustment(true);
+
+    const currentRoundPoints = player.lastScoreAdded ?? 0;
+    const pointDifference = newPoints - currentRoundPoints;
+    const newTotalScore = Math.max(0, (player.score ?? 0) + pointDifference);
+
+    const existingGrading = player.lastGradingResult;
+    const originalPoints = existingGrading?.details?.originalAutoPoints !== undefined
+      ? existingGrading.details.originalAutoPoints
+      : currentRoundPoints;
+    const originalScore = existingGrading?.details?.originalAutoScore !== undefined
+      ? existingGrading.details.originalAutoScore
+      : (existingGrading?.score ?? 0);
+
+    const currentQuestion = questions[gameState?.currentQuestionIndex];
+    const updatedGrading: any = {
+      score: Math.min(1, Math.max(0, Math.round((newPoints / 1000) * 100) / 100)),
+      mode: 'manual',
+      details: {
+        ...(existingGrading?.details || {
+          normalizedStudent: player.currentAnswer || '',
+          normalizedReference: currentQuestion?.reference_answer || ''
+        }),
+        originalAutoPoints: originalPoints,
+        originalAutoScore: originalScore,
+        adjustedByHost: true,
+        reason: customReason?.trim() || `Nota ajustada pelo host para ${newPoints} pts`
+      }
+    };
+
+    try {
+      await updateDoc(doc(db, `games/${gameId}/players`, player.id), {
+        score: newTotalScore,
+        lastScoreAdded: newPoints,
+        lastAnswerCorrect: newPoints > 0,
+        lastGradingResult: updatedGrading
+      });
+      setEditingScorePlayerId(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}/players/${player.id}`);
+    } finally {
+      setIsSavingScoreAdjustment(false);
+    }
+  };
+
+  const handleResetPlayerScoreToAuto = async (player: PlayerData) => {
+    if (!gameId || !player.id || !player.lastGradingResult) return;
+    setIsSavingScoreAdjustment(true);
+
+    const origPoints = player.lastGradingResult.details?.originalAutoPoints;
+    const origScore = player.lastGradingResult.details?.originalAutoScore;
+    if (origPoints === undefined) {
+      setIsSavingScoreAdjustment(false);
+      return;
+    }
+
+    const currentRoundPoints = player.lastScoreAdded ?? 0;
+    const pointDifference = origPoints - currentRoundPoints;
+    const newTotalScore = Math.max(0, (player.score ?? 0) + pointDifference);
+
+    const restoredGrading: any = {
+      ...player.lastGradingResult,
+      score: origScore ?? 0,
+      mode: origScore >= 0.82 ? 'exact' : origScore >= 0.5 ? 'semantic' : 'none',
+      details: {
+        ...player.lastGradingResult.details,
+        adjustedByHost: false,
+        reason: 'Nota original da IA / heurística restaurada'
+      }
+    };
+
+    try {
+      await updateDoc(doc(db, `games/${gameId}/players`, player.id), {
+        score: newTotalScore,
+        lastScoreAdded: origPoints,
+        lastAnswerCorrect: origPoints > 0,
+        lastGradingResult: restoredGrading
+      });
+      setEditingScorePlayerId(null);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}/players/${player.id}`);
+    } finally {
+      setIsSavingScoreAdjustment(false);
+    }
+  };
+
   if (!gameId || !gameState) {
     return (
       <div className="min-h-screen bg-neutral-900 flex items-center justify-center text-white font-sans">
@@ -615,8 +838,12 @@ export default function Host() {
           )}
 
           <div className="bg-neutral-800/90 px-5 py-2 rounded-xl border border-neutral-700 text-center">
-            <p className="text-[10px] text-neutral-400 uppercase tracking-widest font-extrabold">PIN DA SALA</p>
+            <div className="flex items-center justify-center gap-1.5">
+              <p className="text-[10px] text-neutral-400 uppercase tracking-widest font-extrabold">PIN DA SALA</p>
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+            </div>
             <p className="text-2xl font-black tracking-widest text-indigo-400 font-mono">{gameId}</p>
+            <p className="text-[10px] text-emerald-400 font-semibold tracking-tight">Entrada livre durante a partida</p>
           </div>
         </div>
       </header>
@@ -684,34 +911,226 @@ export default function Host() {
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="md:col-span-2">
-                        <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1.5">
-                          Assunto / Conteúdo da Prova
-                        </label>
-                        <input
-                          type="text"
-                          value={topic}
-                          onChange={e => setTopic(e.target.value)}
-                          placeholder="Ex: Revolução Francesa, Fisiologia Renal, Leis de Newton, Funções em JavaScript..."
-                          className="w-full bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm text-white font-medium focus:border-indigo-500 outline-none"
-                        />
-                      </div>
+                    {/* Mode Toggle: Multi-Topic Breakdown vs Single Topic */}
+                    <div className="space-y-2">
+                      <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400">
+                        Estrutura dos Temas da Prova
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setPromptTopicMode('breakdown')}
+                          className={cn(
+                            "p-3 rounded-xl border text-left text-xs font-bold flex items-center gap-2.5 transition-all cursor-pointer",
+                            promptTopicMode === 'breakdown'
+                              ? "bg-indigo-600/20 border-indigo-500 text-indigo-200 shadow-md"
+                              : "bg-neutral-900 border-neutral-700 text-neutral-400 hover:text-white"
+                          )}
+                        >
+                          <Layers className="w-4 h-4 text-indigo-400 shrink-0" />
+                          <div>
+                            <span className="block font-extrabold text-sm text-white">Dividir por Temas</span>
+                            <span className="text-[11px] font-normal text-neutral-400">Ex: 5 perguntas de X, 5 perguntas de Y...</span>
+                          </div>
+                        </button>
 
+                        <button
+                          type="button"
+                          onClick={() => setPromptTopicMode('single')}
+                          className={cn(
+                            "p-3 rounded-xl border text-left text-xs font-bold flex items-center gap-2.5 transition-all cursor-pointer",
+                            promptTopicMode === 'single'
+                              ? "bg-indigo-600/20 border-indigo-500 text-indigo-200 shadow-md"
+                              : "bg-neutral-900 border-neutral-700 text-neutral-400 hover:text-white"
+                          )}
+                        >
+                          <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
+                          <div>
+                            <span className="block font-extrabold text-sm text-white">Tema Único Geral</span>
+                            <span className="text-[11px] font-normal text-neutral-400">Um assunto amplo com X questões</span>
+                          </div>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* SECTION A: MULTI-TOPIC BREAKDOWN BUILDER */}
+                    {promptTopicMode === 'breakdown' && (
+                      <div className="bg-neutral-900/90 border border-neutral-750 p-4 rounded-2xl space-y-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                              <span>Distribuição de Questões por Tópico</span>
+                              <span className="bg-indigo-950 text-indigo-300 text-xs px-2 py-0.5 rounded-full border border-indigo-700/60 font-mono">
+                                Total: {totalQuestions} questões
+                              </span>
+                            </h3>
+                            <p className="text-xs text-neutral-400 mt-0.5">
+                              Defina quantas perguntas quer para cada assunto específico.
+                            </p>
+                          </div>
+
+                          {/* Quick Presets */}
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] uppercase font-bold text-neutral-500">Atalhos:</span>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPresetBreakdown('5_5')}
+                              className="text-[11px] bg-neutral-800 hover:bg-neutral-700 px-2 py-1 rounded-md border border-neutral-700 text-neutral-300 font-medium transition-colors cursor-pointer"
+                            >
+                              5 + 5 (10)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPresetBreakdown('5_5_5')}
+                              className="text-[11px] bg-neutral-800 hover:bg-neutral-700 px-2 py-1 rounded-md border border-neutral-700 text-neutral-300 font-medium transition-colors cursor-pointer"
+                            >
+                              5 + 5 + 5 (15)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPresetBreakdown('3_3_3_3')}
+                              className="text-[11px] bg-neutral-800 hover:bg-neutral-700 px-2 py-1 rounded-md border border-neutral-700 text-neutral-300 font-medium transition-colors cursor-pointer"
+                            >
+                              4x 3 (12)
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPresetBreakdown('10_10')}
+                              className="text-[11px] bg-neutral-800 hover:bg-neutral-700 px-2 py-1 rounded-md border border-neutral-700 text-neutral-300 font-medium transition-colors cursor-pointer"
+                            >
+                              10 + 10 (20)
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* List of Topic Rows */}
+                        <div className="space-y-2.5">
+                          {topicBreakdown.map((item, index) => (
+                            <div
+                              key={item.id}
+                              className="flex items-center gap-2 bg-neutral-950 p-2.5 rounded-xl border border-neutral-800"
+                            >
+                              <div className="w-24 shrink-0">
+                                <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-400 mb-0.5">
+                                  Questões
+                                </label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={50}
+                                  value={item.count}
+                                  onChange={e => handleUpdateTopicRow(index, 'count', e.target.value)}
+                                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-1.5 text-center text-sm font-mono font-bold text-indigo-400 focus:border-indigo-500 outline-none"
+                                />
+                              </div>
+
+                              <div className="flex-1">
+                                <label className="block text-[10px] font-bold uppercase tracking-wider text-neutral-400 mb-0.5">
+                                  Tema / Assunto do Bloco {index + 1}
+                                </label>
+                                <input
+                                  type="text"
+                                  value={item.topic}
+                                  onChange={e => handleUpdateTopicRow(index, 'topic', e.target.value)}
+                                  placeholder={`Ex: Tópico ${index + 1} (ex: Mitose e Meiose, Idade Média...)`}
+                                  className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-2 text-xs sm:text-sm text-white focus:border-indigo-500 outline-none"
+                                />
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveTopicRow(index)}
+                                disabled={topicBreakdown.length <= 1}
+                                title="Remover este tópico"
+                                className="mt-4 p-2 text-neutral-500 hover:text-red-400 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={handleAddTopicRow}
+                          className="w-full py-2.5 px-4 bg-neutral-800 hover:bg-neutral-750 border border-neutral-700 rounded-xl text-xs font-bold text-neutral-200 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4 text-indigo-400" />
+                          + Adicionar outro tópico à lista
+                        </button>
+                      </div>
+                    )}
+
+                    {/* SECTION B: SINGLE TOPIC WITH CUSTOM QUANTITY */}
+                    {promptTopicMode === 'single' && (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="md:col-span-2">
+                          <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1.5">
+                            Assunto / Conteúdo da Prova
+                          </label>
+                          <input
+                            type="text"
+                            value={topic}
+                            onChange={e => setTopic(e.target.value)}
+                            placeholder="Ex: Revolução Francesa, Fisiologia Renal, Leis de Newton, Funções em JavaScript..."
+                            className="w-full bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm text-white font-medium focus:border-indigo-500 outline-none"
+                          />
+                        </div>
+
+                        <div className="md:col-span-2 space-y-2">
+                          <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400">
+                            Quantidade de Questões Personalizada
+                          </label>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {[3, 5, 6, 8, 10, 15, 20].map(n => (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() => setNumQuestions(n)}
+                                className={cn(
+                                  "px-3 py-1.5 rounded-lg text-xs font-bold font-mono transition-colors cursor-pointer border",
+                                  numQuestions === n
+                                    ? "bg-indigo-600 text-white border-indigo-500"
+                                    : "bg-neutral-900 text-neutral-300 border-neutral-700 hover:border-neutral-600"
+                                )}
+                              >
+                                {n} questões
+                              </button>
+                            ))}
+                            <div className="flex items-center gap-2 bg-neutral-900 border border-neutral-700 px-3 py-1 rounded-lg">
+                              <span className="text-xs text-neutral-400 font-bold">Personalizado:</span>
+                              <input
+                                type="number"
+                                min={1}
+                                max={50}
+                                value={numQuestions}
+                                onChange={e => setNumQuestions(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                                className="w-16 bg-neutral-950 border border-neutral-700 rounded px-2 py-0.5 text-center text-xs font-mono font-bold text-indigo-400 focus:border-indigo-500 outline-none"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* COMMON SETTINGS GRID */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
                       <div>
-                        <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1.5">
-                          Quantidade de Questões
+                        <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1.5 flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                          Tempo por Questão
                         </label>
                         <select
-                          value={numQuestions}
-                          onChange={e => setNumQuestions(Number(e.target.value))}
+                          value={suggestedTimeLimit}
+                          onChange={e => setSuggestedTimeLimit(Number(e.target.value))}
                           className="w-full bg-neutral-900 border border-neutral-700 rounded-xl p-3 text-sm text-white font-semibold outline-none"
                         >
-                          <option value={4}>4 Questões</option>
-                          <option value={6}>6 Questões</option>
-                          <option value={8}>8 Questões</option>
-                          <option value={10}>10 Questões</option>
-                          <option value={15}>15 Questões</option>
+                          <option value={20}>20 segundos (Rápido)</option>
+                          <option value={30}>30 segundos</option>
+                          <option value={45}>45 segundos (Recomendado)</option>
+                          <option value={60}>60 segundos (1 minuto)</option>
+                          <option value={90}>90 segundos (1m 30s)</option>
+                          <option value={120}>120 segundos (2 minutos)</option>
                         </select>
                       </div>
 
@@ -766,11 +1185,14 @@ export default function Host() {
                         <label className="text-xs font-bold uppercase tracking-wider text-neutral-400 flex items-center gap-1.5">
                           <FileCode className="w-4 h-4 text-indigo-400" />
                           Prompt Gerado (Pronto para copiar):
+                          <span className="ml-1 bg-indigo-950 text-indigo-300 text-[10px] px-2 py-0.5 rounded-full border border-indigo-800 font-mono">
+                            {totalQuestions} questões no prompt
+                          </span>
                         </label>
                         <div className="flex items-center gap-2">
                           <button
                             onClick={handleDownloadSampleJson}
-                            className="text-xs font-semibold text-neutral-400 hover:text-neutral-200 flex items-center gap-1 bg-neutral-900 hover:bg-neutral-750 px-2.5 py-1 rounded-lg border border-neutral-700 transition-colors"
+                            className="text-xs font-semibold text-neutral-400 hover:text-neutral-200 flex items-center gap-1 bg-neutral-900 hover:bg-neutral-750 px-2.5 py-1 rounded-lg border border-neutral-700 transition-colors cursor-pointer"
                             title="Baixar arquivo JSON de exemplo"
                           >
                             <Download className="w-3.5 h-3.5" />
@@ -783,7 +1205,7 @@ export default function Host() {
                         <textarea
                           readOnly
                           value={generatedPrompt}
-                          rows={6}
+                          rows={7}
                           className="w-full bg-neutral-950 border border-neutral-700 rounded-xl p-3.5 text-xs text-neutral-300 font-mono outline-none resize-none select-all"
                         />
                       </div>
@@ -800,13 +1222,13 @@ export default function Host() {
                         >
                           {copiedPrompt ? (
                             <>
-                              <Check className="w-5 h-5" />
-                              PROMPT COPIADO COM SUCESSO!
+                              <Check className="w-5 h-5 text-white" />
+                              <span>Prompt Copiado com Sucesso! Cole no ChatGPT / Claude / Gemini</span>
                             </>
                           ) : (
                             <>
                               <Copy className="w-5 h-5" />
-                              COPIAR PROMPT PARA A IA
+                              <span>Copiar Prompt ({totalQuestions} questões) para ChatGPT / Claude</span>
                             </>
                           )}
                         </button>
@@ -976,6 +1398,47 @@ export default function Host() {
                     </div>
                   </div>
 
+                  {/* Bulk Time Limit Toolbar */}
+                  <div className="bg-neutral-900/90 p-3.5 rounded-2xl border border-neutral-750 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4 text-indigo-400 shrink-0" />
+                      <div>
+                        <span className="font-bold text-neutral-200">Tempo de Resposta em Massa:</span>
+                        <span className="text-neutral-400 block sm:inline sm:ml-1">definir o mesmo limite para todas as {questions.length} questões</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {[15, 20, 30, 45, 60, 90, 120].map((sec) => (
+                        <button
+                          key={sec}
+                          type="button"
+                          onClick={() => handleApplyBulkTimeToAll(sec)}
+                          className="bg-neutral-800 hover:bg-indigo-600 text-neutral-300 hover:text-white px-2.5 py-1 rounded-lg font-mono font-bold transition-colors cursor-pointer border border-neutral-700"
+                        >
+                          {sec}s
+                        </button>
+                      ))}
+                      <div className="flex items-center gap-1 bg-neutral-800 border border-neutral-700 rounded-lg px-2 py-0.5 ml-1">
+                        <input
+                          type="number"
+                          min={5}
+                          max={300}
+                          value={bulkTimeInput}
+                          onChange={e => setBulkTimeInput(Number(e.target.value))}
+                          className="w-12 bg-transparent text-center font-mono font-bold text-neutral-100 outline-none text-xs"
+                        />
+                        <span className="text-neutral-400 text-[10px]">s</span>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyBulkTimeToAll(bulkTimeInput)}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white px-2 py-0.5 rounded text-[11px] font-bold transition-colors cursor-pointer ml-1"
+                        >
+                          Aplicar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
                   <div className="space-y-4 max-h-[440px] overflow-y-auto pr-2 custom-scrollbar">
                     {questions.map((q, i) => (
                       <div key={q.id || i} className="bg-neutral-900/90 p-4 rounded-2xl border border-neutral-750 space-y-3 relative group">
@@ -994,12 +1457,33 @@ export default function Host() {
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-3">
-                            <span className="text-xs text-neutral-400 font-mono">{q.timeLimit}s</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (editingTimeQId === q.id) {
+                                  setEditingTimeQId(null);
+                                } else {
+                                  setEditingTimeQId(q.id || null);
+                                  setTempTimeValue(q.timeLimit || 45);
+                                }
+                              }}
+                              className={cn(
+                                "flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition-all border cursor-pointer",
+                                editingTimeQId === q.id
+                                  ? "bg-indigo-600 text-white border-indigo-500 shadow"
+                                  : "bg-neutral-800 hover:bg-neutral-750 text-neutral-300 border-neutral-700 hover:border-neutral-600"
+                              )}
+                              title="Clique para alterar o tempo desta questão"
+                            >
+                              <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                              <span>{q.timeLimit || 45}s</span>
+                              <span className="text-[10px] text-neutral-400 font-sans font-normal ml-0.5">(Alterar)</span>
+                            </button>
                             {q.id && (
                               <button
                                 onClick={() => handleDeleteQuestion(q.id!)}
-                                className="text-neutral-500 hover:text-red-400 transition-colors p-1"
+                                className="text-neutral-500 hover:text-red-400 transition-colors p-1 cursor-pointer"
                                 title="Excluir questão"
                               >
                                 <Trash2 className="w-4 h-4" />
@@ -1007,6 +1491,60 @@ export default function Host() {
                             )}
                           </div>
                         </div>
+
+                        {/* Inline Time Editor for this Question */}
+                        {editingTimeQId === q.id && (
+                          <div className="bg-neutral-800 p-3 rounded-xl border border-indigo-500/40 space-y-2">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-indigo-300 flex items-center gap-1.5">
+                                <Clock className="w-3.5 h-3.5" />
+                                Definir tempo específico para a Questão {i + 1}:
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setEditingTimeQId(null)}
+                                className="text-neutral-400 hover:text-white text-xs cursor-pointer"
+                              >
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {[15, 20, 30, 45, 60, 90, 120].map((sec) => (
+                                <button
+                                  key={sec}
+                                  type="button"
+                                  onClick={() => handleUpdateQuestionTime(q.id!, sec)}
+                                  className={cn(
+                                    "px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-colors cursor-pointer border",
+                                    (q.timeLimit || 45) === sec
+                                      ? "bg-indigo-600 text-white border-indigo-500"
+                                      : "bg-neutral-900 text-neutral-300 hover:bg-neutral-700 border-neutral-700"
+                                  )}
+                                >
+                                  {sec}s
+                                </button>
+                              ))}
+                              <div className="flex items-center gap-1 bg-neutral-900 border border-neutral-700 rounded-md px-2 py-1 ml-auto">
+                                <input
+                                  type="number"
+                                  min={5}
+                                  max={300}
+                                  value={tempTimeValue}
+                                  onChange={e => setTempTimeValue(Number(e.target.value))}
+                                  className="w-12 bg-transparent text-center font-mono font-bold text-white text-xs outline-none"
+                                />
+                                <span className="text-neutral-400 text-xs">s</span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleUpdateQuestionTime(q.id!, tempTimeValue)}
+                                  className="bg-emerald-600 hover:bg-emerald-500 text-white px-2.5 py-0.5 rounded text-xs font-bold transition-colors cursor-pointer ml-1"
+                                >
+                                  Salvar
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
 
                         <p className="font-bold text-neutral-100 text-base">{q.prompt}</p>
 
@@ -1201,6 +1739,43 @@ export default function Host() {
                     <span className="font-bold text-neutral-200">
                       {players.filter(p => p.currentAnswer !== null && p.currentAnswer !== undefined && p.currentAnswer !== '').length} / {players.length} já responderam
                     </span>
+                  </div>
+                </div>
+
+                {/* Live Question Time Adjuster */}
+                <div className="w-full bg-neutral-900/90 p-3 rounded-2xl border border-neutral-750 space-y-2 text-left">
+                  <div className="flex items-center justify-between text-[11px] text-neutral-400 font-bold uppercase tracking-wider">
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5 text-indigo-400" />
+                      Tempo da Questão
+                    </span>
+                    <span className="font-mono text-neutral-300">Total: {currentQ.timeLimit || 45}s</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => handleAdjustLiveTime(15)}
+                      className="bg-neutral-800 hover:bg-neutral-700 text-emerald-400 hover:text-emerald-300 border border-neutral-700 font-mono font-bold text-xs py-1.5 rounded-lg transition-colors cursor-pointer text-center"
+                      title="Adicionar 15 segundos ao tempo limite desta pergunta"
+                    >
+                      +15s
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAdjustLiveTime(30)}
+                      className="bg-neutral-800 hover:bg-neutral-700 text-emerald-400 hover:text-emerald-300 border border-neutral-700 font-mono font-bold text-xs py-1.5 rounded-lg transition-colors cursor-pointer text-center"
+                      title="Adicionar 30 segundos ao tempo limite desta pergunta"
+                    >
+                      +30s
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleAdjustLiveTime(-10)}
+                      className="bg-neutral-800 hover:bg-neutral-700 text-amber-400 hover:text-amber-300 border border-neutral-700 font-mono font-bold text-xs py-1.5 rounded-lg transition-colors cursor-pointer text-center"
+                      title="Subtrair 10 segundos do tempo limite desta pergunta"
+                    >
+                      -10s
+                    </button>
                   </div>
                 </div>
 
@@ -1407,7 +1982,8 @@ export default function Host() {
                         {Math.round((hostPlayer.lastGradingResult?.score || 0) * 100)}%
                       </span>
                       <span className="text-[10px] block uppercase font-bold text-neutral-400">
-                        {hostPlayer.lastGradingResult?.mode === 'exact' ? 'Exato' :
+                        {hostPlayer.lastGradingResult?.mode === 'manual' ? 'Manual (Host)' :
+                         hostPlayer.lastGradingResult?.mode === 'exact' ? 'Exato' :
                          hostPlayer.lastGradingResult?.mode === 'lexical' ? 'Léxico' :
                          hostPlayer.lastGradingResult?.mode === 'semantic' ? 'Semântico' : 'Incorreto'}
                       </span>
@@ -1428,7 +2004,7 @@ export default function Host() {
                 <span className="text-xs font-normal text-neutral-400">{players.length} avaliações</span>
               </h3>
 
-              <div className="space-y-3 max-h-[320px] overflow-y-auto pr-2 custom-scrollbar">
+              <div className="space-y-3 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
                 {players.map((p) => {
                   const isHost = p.id === auth.currentUser?.uid;
                   const hasAnswered = Boolean(p.currentAnswer && p.currentAnswer.trim().length > 0);
@@ -1436,61 +2012,291 @@ export default function Host() {
                   const scorePct = hasAnswered && res ? Math.round(res.score * 100) : 0;
                   const mode = hasAnswered && res ? res.mode : 'none';
                   const pointsAdded = hasAnswered ? (p.lastScoreAdded || 0) : 0;
+                  const isManual = res?.mode === 'manual' || res?.details?.adjustedByHost;
                   const reasonText = hasAnswered
                     ? (res?.details?.reason || '')
                     : 'Tempo esgotado - Sem resposta enviada';
+                  const isEditingThis = editingScorePlayerId === p.id;
 
                   return (
                     <div
                       key={p.id}
                       className={cn(
-                        "p-4 rounded-xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-3 transition-all",
-                        isHost ? "bg-indigo-950/40 border-indigo-500/50" : "bg-neutral-900 border-neutral-750"
+                        "p-4 rounded-xl border transition-all",
+                        isHost ? "bg-indigo-950/40 border-indigo-500/50" : "bg-neutral-900 border-neutral-750",
+                        isEditingThis && "ring-2 ring-amber-500/80 border-amber-500"
                       )}
                     >
-                      <div className="space-y-1 max-w-xl">
-                        <div className="flex items-center gap-2">
-                          <span className={cn("font-bold text-sm", isHost ? "text-indigo-200" : "text-neutral-200")}>
-                            {p.name}
-                          </span>
-                          {isHost && (
-                            <span className="text-[10px] bg-indigo-600 text-white font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
-                              Host (Você)
+                      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+                        <div className="space-y-1 max-w-xl">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={cn("font-bold text-sm", isHost ? "text-indigo-200" : "text-neutral-200")}>
+                              {p.name}
                             </span>
+                            {isHost && (
+                              <span className="text-[10px] bg-indigo-600 text-white font-black px-1.5 py-0.5 rounded uppercase tracking-wider">
+                                Host (Você)
+                              </span>
+                            )}
+                            <span className={cn(
+                              "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider",
+                              !hasAnswered ? "bg-neutral-800 text-neutral-400 border border-neutral-700" :
+                              mode === 'manual' ? "bg-amber-500/20 text-amber-300 border border-amber-500/40" :
+                              mode === 'exact' ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" :
+                              mode === 'lexical' ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" :
+                              mode === 'semantic' ? "bg-purple-500/20 text-purple-300 border border-purple-500/30" :
+                              "bg-red-500/20 text-red-300 border border-red-500/30"
+                            )}>
+                              {!hasAnswered ? 'Sem Resposta' :
+                               mode === 'manual' ? 'Manual' :
+                               mode === 'exact' ? 'Exato' :
+                               mode === 'lexical' ? 'Léxico' :
+                               mode === 'semantic' ? 'Semântico' : 'Incorreto'}
+                            </span>
+                            {isManual && (
+                              <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2 py-0.5 rounded-full font-bold flex items-center gap-1">
+                                <Award className="w-3 h-3 text-amber-400" />
+                                Revisão do Host
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-neutral-300 text-sm italic">
+                            {hasAnswered ? `"${p.currentAnswer}"` : <span className="text-neutral-500">Sem resposta enviada</span>}
+                          </p>
+                          {reasonText && (
+                            <p className="text-xs text-neutral-400">{reasonText}</p>
                           )}
-                          <span className={cn(
-                            "text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider",
-                            !hasAnswered ? "bg-neutral-800 text-neutral-400 border border-neutral-700" :
-                            mode === 'exact' ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30" :
-                            mode === 'lexical' ? "bg-blue-500/20 text-blue-300 border border-blue-500/30" :
-                            mode === 'semantic' ? "bg-purple-500/20 text-purple-300 border border-purple-500/30" :
-                            "bg-red-500/20 text-red-300 border border-red-500/30"
-                          )}>
-                            {!hasAnswered ? 'Sem Resposta' :
-                             mode === 'exact' ? 'Exato' :
-                             mode === 'lexical' ? 'Léxico' :
-                             mode === 'semantic' ? 'Semântico' : 'Incorreto'}
-                          </span>
                         </div>
-                        <p className="text-neutral-300 text-sm italic">
-                          {hasAnswered ? `"${p.currentAnswer}"` : <span className="text-neutral-500">Sem resposta enviada</span>}
-                        </p>
-                        {reasonText && (
-                          <p className="text-xs text-neutral-400">{reasonText}</p>
-                        )}
+
+                        <div className="text-right shrink-0 flex items-center gap-3 self-end md:self-center">
+                          <div className="text-right">
+                            <span className={cn(
+                              "text-xl font-black font-mono block",
+                              !hasAnswered ? "text-neutral-500" :
+                              scorePct >= 80 ? "text-emerald-400" :
+                              scorePct >= 50 ? "text-amber-400" : "text-red-400"
+                            )}>
+                              {scorePct}%
+                            </span>
+                            <span className="text-xs text-neutral-400 font-mono">+{pointsAdded} pts</span>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => isEditingThis ? setEditingScorePlayerId(null) : handleStartEditScore(p)}
+                            className={cn(
+                              "text-xs font-bold px-3 py-1.5 rounded-lg border transition-all flex items-center gap-1.5 cursor-pointer",
+                              isEditingThis
+                                ? "bg-amber-500 text-neutral-950 border-amber-400 font-black shadow"
+                                : "bg-neutral-800 hover:bg-neutral-750 text-neutral-200 border-neutral-700 hover:border-neutral-600"
+                            )}
+                            title="Alterar pontuação desta resposta antes da próxima questão"
+                          >
+                            <Sliders className="w-3.5 h-3.5 text-amber-400" />
+                            {isEditingThis ? 'Fechar' : 'Ajustar Pontos'}
+                          </button>
+                        </div>
                       </div>
 
-                      <div className="text-right shrink-0 flex items-center md:flex-col gap-2 md:gap-1">
-                        <span className={cn(
-                          "text-xl font-black font-mono",
-                          !hasAnswered ? "text-neutral-500" :
-                          scorePct >= 80 ? "text-emerald-400" :
-                          scorePct >= 50 ? "text-amber-400" : "text-red-400"
-                        )}>
-                          {scorePct}%
-                        </span>
-                        <span className="text-xs text-neutral-400 font-mono">+{pointsAdded} pts</span>
-                      </div>
+                      {/* Score Adjustment Editor Panel */}
+                      {isEditingThis && (
+                        <div className="mt-3 pt-3 border-t border-neutral-750 bg-neutral-950/80 p-4 rounded-xl space-y-3">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <Sliders className="w-4 h-4 text-amber-400" />
+                              <span className="font-bold text-xs text-neutral-200">
+                                Alterar Pontuação para <span className="text-amber-300">{p.name}</span>
+                              </span>
+                              <span className="text-xs text-neutral-400 font-mono">
+                                (Atual: +{pointsAdded} pts)
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setEditingScorePlayerId(null)}
+                              className="text-neutral-400 hover:text-white text-xs p-1 cursor-pointer"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          </div>
+
+                          {/* Quick Score Presets */}
+                          <div className="space-y-1.5">
+                            <span className="text-[10px] uppercase font-bold text-neutral-400 block tracking-wider">
+                              Atalhos Rápidos de Pontuação:
+                            </span>
+                            <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setScoreAdjustmentPoints(1000)}
+                                className={cn(
+                                  "p-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer",
+                                  scoreAdjustmentPoints === 1000
+                                    ? "bg-emerald-600 text-white border-emerald-500 shadow"
+                                    : "bg-neutral-800 text-emerald-300 border-neutral-700 hover:bg-neutral-750"
+                                )}
+                              >
+                                <div className="font-mono text-sm">1.000 pts</div>
+                                <div className="text-[10px] font-normal opacity-80">100% (Total)</div>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setScoreAdjustmentPoints(750)}
+                                className={cn(
+                                  "p-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer",
+                                  scoreAdjustmentPoints === 750
+                                    ? "bg-emerald-600 text-white border-emerald-500 shadow"
+                                    : "bg-neutral-800 text-emerald-300 border-neutral-700 hover:bg-neutral-750"
+                                )}
+                              >
+                                <div className="font-mono text-sm">750 pts</div>
+                                <div className="text-[10px] font-normal opacity-80">75% (Bom)</div>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setScoreAdjustmentPoints(500)}
+                                className={cn(
+                                  "p-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer",
+                                  scoreAdjustmentPoints === 500
+                                    ? "bg-amber-600 text-white border-amber-500 shadow"
+                                    : "bg-neutral-800 text-amber-300 border-neutral-700 hover:bg-neutral-750"
+                                )}
+                              >
+                                <div className="font-mono text-sm">500 pts</div>
+                                <div className="text-[10px] font-normal opacity-80">50% (Parcial)</div>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setScoreAdjustmentPoints(250)}
+                                className={cn(
+                                  "p-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer",
+                                  scoreAdjustmentPoints === 250
+                                    ? "bg-amber-600 text-white border-amber-500 shadow"
+                                    : "bg-neutral-800 text-amber-300 border-neutral-700 hover:bg-neutral-750"
+                                )}
+                              >
+                                <div className="font-mono text-sm">250 pts</div>
+                                <div className="text-[10px] font-normal opacity-80">25% (Menção)</div>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setScoreAdjustmentPoints(0)}
+                                className={cn(
+                                  "p-2 rounded-lg text-xs font-bold transition-all border text-center cursor-pointer",
+                                  scoreAdjustmentPoints === 0
+                                    ? "bg-red-600 text-white border-red-500 shadow"
+                                    : "bg-neutral-800 text-red-300 border-neutral-700 hover:bg-neutral-750"
+                                )}
+                              >
+                                <div className="font-mono text-sm">0 pts</div>
+                                <div className="text-[10px] font-normal opacity-80">0% (Zerar)</div>
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Fine Controls and Reason */}
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                            <div>
+                              <label className="text-[10px] uppercase font-bold text-neutral-400 block mb-1">
+                                Ajuste Fino de Pontos:
+                              </label>
+                              <div className="flex items-center gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => setScoreAdjustmentPoints(prev => Math.max(0, prev - 100))}
+                                  className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-2 py-1.5 rounded-lg text-xs font-mono font-bold border border-neutral-700 cursor-pointer"
+                                >
+                                  -100
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setScoreAdjustmentPoints(prev => Math.max(0, prev - 50))}
+                                  className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-2 py-1.5 rounded-lg text-xs font-mono font-bold border border-neutral-700 cursor-pointer"
+                                >
+                                  -50
+                                </button>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={2000}
+                                  value={scoreAdjustmentPoints}
+                                  onChange={e => setScoreAdjustmentPoints(Math.max(0, Number(e.target.value)))}
+                                  className="w-20 bg-neutral-900 border border-neutral-700 rounded-lg p-1.5 text-center font-mono font-bold text-white text-sm outline-none focus:border-indigo-500"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setScoreAdjustmentPoints(prev => prev + 50)}
+                                  className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-2 py-1.5 rounded-lg text-xs font-mono font-bold border border-neutral-700 cursor-pointer"
+                                >
+                                  +50
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setScoreAdjustmentPoints(prev => prev + 100)}
+                                  className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 px-2 py-1.5 rounded-lg text-xs font-mono font-bold border border-neutral-700 cursor-pointer"
+                                >
+                                  +100
+                                </button>
+                              </div>
+                            </div>
+
+                            <div>
+                              <label className="text-[10px] uppercase font-bold text-neutral-400 block mb-1">
+                                Motivo / Observação do Host:
+                              </label>
+                              <input
+                                type="text"
+                                value={scoreAdjustmentReason}
+                                onChange={e => setScoreAdjustmentReason(e.target.value)}
+                                placeholder="Ex: Resposta alternativa aceita pelo professor"
+                                className="w-full bg-neutral-900 border border-neutral-700 rounded-lg p-1.5 text-xs text-neutral-200 outline-none focus:border-indigo-500"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Impact preview & Actions */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-neutral-850">
+                            <div className="text-xs text-neutral-300 font-mono">
+                              Novo Total Geral de {p.name}: <span className="text-emerald-400 font-bold">{Math.max(0, (p.score || 0) - (p.lastScoreAdded || 0) + scoreAdjustmentPoints)} pts</span>
+                            </div>
+
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {p.lastGradingResult?.details?.originalAutoPoints !== undefined && (
+                                <button
+                                  type="button"
+                                  disabled={isSavingScoreAdjustment}
+                                  onClick={() => handleResetPlayerScoreToAuto(p)}
+                                  className="bg-neutral-800 hover:bg-neutral-700 text-neutral-300 text-xs font-bold px-3 py-1.5 rounded-lg border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+                                  title="Reverter para a pontuação calculada originalmente pela IA"
+                                >
+                                  <RotateCcw className="w-3.5 h-3.5" />
+                                  Restaurar IA ({p.lastGradingResult.details.originalAutoPoints} pts)
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => setEditingScorePlayerId(null)}
+                                className="bg-neutral-800 hover:bg-neutral-750 text-neutral-400 hover:text-neutral-200 text-xs font-bold px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                              >
+                                Cancelar
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isSavingScoreAdjustment}
+                                onClick={() => handleAdjustPlayerScore(p, scoreAdjustmentPoints, scoreAdjustmentReason)}
+                                className="bg-amber-500 hover:bg-amber-400 disabled:bg-neutral-750 text-neutral-950 font-black text-xs px-4 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer shadow"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                                {isSavingScoreAdjustment ? 'Salvando...' : 'Salvar Alteração de Pontos'}
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

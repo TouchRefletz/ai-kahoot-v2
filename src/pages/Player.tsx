@@ -32,6 +32,7 @@ export default function Player() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [localGradingResult, setLocalGradingResult] = useState<GradingResult | null>(null);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
+  const [joinedMidGame, setJoinedMidGame] = useState(false);
 
   useEffect(() => {
     if (!joined || !gameId || !playerId) return;
@@ -111,6 +112,10 @@ export default function Player() {
         alert('Sala de jogo não encontrada! Verifique o PIN digitado.');
         return;
       }
+
+      const gameData = gameDoc.data();
+      const isMidGame = gameData?.status && gameData.status !== 'lobby';
+      setJoinedMidGame(Boolean(isMidGame));
 
       const uid = auth.currentUser.uid;
       setPlayerId(uid);
@@ -256,7 +261,7 @@ export default function Player() {
     typeof playerState?.currentAnswer === 'string' &&
     playerState.currentAnswer.trim().length > 0
   );
-  const grading = hasAnswered ? (localGradingResult || playerState?.lastGradingResult) : null;
+  const grading = hasAnswered ? (playerState?.lastGradingResult || localGradingResult) : null;
 
   return (
     <div className="min-h-screen bg-neutral-900 text-white font-sans flex flex-col">
@@ -294,10 +299,30 @@ export default function Player() {
           </div>
         )}
 
+        {/* LOADING FALLBACK WHEN QUESTIONS ARE SYNCING (MID-GAME JOIN) */}
+        {status === 'question' && !currentQ && (
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-12">
+            <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+            <div className="space-y-1">
+              <h3 className="text-lg font-bold text-neutral-100">Sincronizando Questão {(gameState.currentQuestionIndex || 0) + 1}...</h3>
+              <p className="text-xs text-neutral-400 max-w-xs mx-auto">
+                Você acabou de entrar na partida! Carregando a pergunta em andamento...
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* QUESTION VIEW: STUDENT ANSWERS SHORT ANSWER OR FILL IN BLANK */}
         {status === 'question' && currentQ && (
           <div className="flex-1 flex flex-col justify-between py-2">
             <div className="space-y-4">
+              {joinedMidGame && !hasAnswered && (
+                <div className="bg-indigo-950/70 border border-indigo-700/60 px-4 py-2.5 rounded-2xl flex items-center gap-2.5 text-xs text-indigo-200">
+                  <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+                  <span>Você entrou durante a partida em andamento! Você pode responder à questão atual agora.</span>
+                </div>
+              )}
+
               {/* Question Header */}
               <div className="flex justify-between items-center">
                 <div className="flex items-center gap-2">
@@ -411,6 +436,14 @@ export default function Player() {
           </div>
         )}
 
+        {/* ANSWER REVEAL LOADING FALLBACK */}
+        {status === 'answer_reveal' && !currentQ && (
+          <div className="flex-1 flex flex-col items-center justify-center text-center space-y-4 py-12">
+            <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+            <p className="text-sm text-neutral-300 font-bold">Aguardando início da próxima questão...</p>
+          </div>
+        )}
+
         {/* ANSWER REVEAL VIEW: DETAILED GRADING FEEDBACK */}
         {status === 'answer_reveal' && currentQ && (
           <div className="flex-1 flex flex-col space-y-4 py-2">
@@ -455,12 +488,23 @@ export default function Player() {
                 </div>
               </div>
             ) : (
-              <div className="p-5 rounded-2xl border text-center space-y-2 shadow-lg bg-neutral-800/90 border-neutral-700 text-neutral-400">
+              <div className="p-5 rounded-2xl border text-center space-y-2 shadow-lg bg-neutral-800/90 border-neutral-700 text-neutral-300">
                 <div className="flex items-center justify-center gap-2">
-                  <XCircle className="w-7 h-7 text-neutral-500" />
-                  <span className="text-3xl font-black font-mono text-neutral-400">0%</span>
+                  <Sparkles className="w-6 h-6 text-indigo-400" />
+                  <span className="text-2xl font-black font-mono text-indigo-300">
+                    {joinedMidGame ? 'Entrada na Sessão' : '0%'}
+                  </span>
                 </div>
-                <p className="font-bold text-sm text-neutral-300">Tempo Esgotado - Sem Resposta</p>
+                <p className="font-bold text-sm text-neutral-200">
+                  {joinedMidGame
+                    ? 'Você entrou durante o encerramento desta questão!'
+                    : 'Tempo Esgotado - Sem Resposta'}
+                </p>
+                <p className="text-xs text-neutral-400 max-w-sm mx-auto">
+                  {joinedMidGame
+                    ? `Acompanhe a resposta-modelo abaixo. Sua pontuação e participação valerão a partir da Questão ${(gameState.currentQuestionIndex || 0) + 2}!`
+                    : 'Nenhuma resposta foi enviada antes do tempo terminar.'}
+                </p>
                 <div className="inline-block bg-neutral-900/60 px-3 py-1 rounded-full text-xs font-bold text-neutral-400">
                   +0 pontos nesta questão
                 </div>
@@ -492,8 +536,12 @@ export default function Player() {
 
                 <div className="flex items-center justify-between py-1 border-b border-neutral-700/60">
                   <span className="text-neutral-400">Modo de Avaliação:</span>
-                  <span className="font-bold text-neutral-200 uppercase">
-                    {grading.mode === 'exact' ? 'Correspondência Exata' :
+                  <span className={cn(
+                    "font-bold uppercase",
+                    grading.mode === 'manual' ? "text-amber-300 font-black" : "text-neutral-200"
+                  )}>
+                    {grading.mode === 'manual' ? '⭐ Revisão Manual do Professor / Host' :
+                     grading.mode === 'exact' ? 'Correspondência Exata' :
                      grading.mode === 'lexical' ? 'Similaridade Léxica' :
                      grading.mode === 'semantic' ? 'Similaridade Semântica (all-MiniLM-L6-v2)' : 'Insuficiente'}
                   </span>
@@ -557,6 +605,13 @@ export default function Player() {
         {/* LEADERBOARD VIEW */}
         {status === 'leaderboard' && (
           <div className="flex-1 flex flex-col space-y-4 py-2 max-w-xl mx-auto w-full animate-in fade-in duration-300">
+            {joinedMidGame && (
+              <div className="bg-indigo-950/70 border border-indigo-700/60 px-4 py-2.5 rounded-2xl flex items-center gap-2.5 text-xs text-indigo-200">
+                <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span>Você entrou durante a partida em andamento! Acompanhe o ranking e prepare-se para a próxima questão.</span>
+              </div>
+            )}
+
             {/* Top result summary card */}
             <div className="bg-neutral-800/90 p-4 rounded-2xl border border-neutral-700 shadow-xl space-y-3">
               <div className="flex items-center gap-3">

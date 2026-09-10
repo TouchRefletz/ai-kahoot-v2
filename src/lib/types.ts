@@ -19,7 +19,7 @@ export interface Question {
   timeLimit: number;
 }
 
-export type GradingMode = 'exact' | 'lexical' | 'semantic' | 'none';
+export type GradingMode = 'exact' | 'lexical' | 'semantic' | 'manual' | 'none';
 
 export interface GradingDetails {
   normalizedStudent: string;
@@ -32,6 +32,9 @@ export interface GradingDetails {
   cosineSimilarity?: number;  // Cosine similarity (-1 to 1)
   thresholdsUsed?: QuestionThresholds;
   reason?: string;
+  originalAutoPoints?: number;
+  originalAutoScore?: number;
+  adjustedByHost?: boolean;
 }
 
 export interface GradingResult {

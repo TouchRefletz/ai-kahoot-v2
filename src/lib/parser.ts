@@ -162,6 +162,12 @@ export function sanitizeQuestions(parsedData: any): Omit<Question, 'embedding_re
   });
 }
 
+export interface TopicBreakdownItem {
+  id?: string;
+  topic: string;
+  count: number;
+}
+
 /**
  * Generates the full prompt for the user to copy and paste into ChatGPT, Claude, Gemini, DeepSeek, etc.
  */
@@ -171,7 +177,25 @@ export function generateExternalAIPrompt(config: {
   difficulty: string;
   typeDistribution: string;
   customInstructions?: string;
+  suggestedTimeLimit?: number;
+  topicBreakdown?: TopicBreakdownItem[];
 }): string {
+  const targetTime = config.suggestedTimeLimit || 45;
+
+  const validBreakdown = (config.topicBreakdown || []).filter(item => item.topic.trim().length > 0 && item.count > 0);
+  const isMultiTopic = validBreakdown.length > 0;
+  const totalQuestions = isMultiTopic
+    ? validBreakdown.reduce((sum, item) => sum + item.count, 0)
+    : Math.max(1, config.numQuestions);
+
+  let topicsDescription = '';
+  if (isMultiTopic) {
+    topicsDescription = `DISTRIBUIÇÃO OBRIGATÓRIA DE TEMAS (${totalQuestions} questões no total):\n` +
+      validBreakdown.map((item, idx) => `  ${idx + 1}. Exatamente ${item.count} questão(ões) sobre: "${item.topic.trim()}"`).join('\n');
+  } else {
+    topicsDescription = `Assunto/Conteúdo Geral: "${config.topic.trim() || 'Conhecimentos Gerais'}" (${totalQuestions} questões)`;
+  }
+
   const sampleJson = `[
   {
     "type": "fill_blank",
@@ -186,7 +210,7 @@ export function generateExternalAIPrompt(config: {
     "required_keywords": ["glicolise"],
     "thresholds": { "full": 0.82, "partial": 0.65 },
     "rubric_explanation": "O estudante deve identificar o termo técnico glicólise.",
-    "timeLimit": 40
+    "timeLimit": ${targetTime}
   },
   {
     "type": "short_answer",
@@ -199,20 +223,21 @@ export function generateExternalAIPrompt(config: {
     "required_keywords": ["bicamada", "fosfolipidios", "proteinas"],
     "thresholds": { "full": 0.80, "partial": 0.65 },
     "rubric_explanation": "A resposta precisa citar a bicamada de fosfolipídios e o movimento das proteínas.",
-    "timeLimit": 50
+    "timeLimit": ${targetTime}
   }
 ]`;
 
   return `Você é um professor e elaborador sênior de exames dissertativos acadêmicos.
-Crie um arquivo JSON com ${config.numQuestions} questões de treino dissertativo e preenchimento de lacunas sobre o seguinte conteúdo:
+Crie um arquivo JSON com EXATAMENTE ${totalQuestions} questões de treino dissertativo e preenchimento de lacunas conforme a especificação abaixo:
 
-Assunto/Conteúdo: "${config.topic}"
+${topicsDescription}
 Nível de Dificuldade: ${config.difficulty}
 Distribuição de Tipos: ${config.typeDistribution}
-${config.customInstructions ? `Instruções Específicas do Professor: "${config.customInstructions}"` : ''}
+Tempo Limite Recomendado por Questão: ${targetTime} segundos
+${config.customInstructions ? `Instruções Adicionais do Professor: "${config.customInstructions}"` : ''}
 
 REGRAS ESTRITAS DE FORMATAÇÃO DO ARQUIVO:
-1. Retorne APENAS um bloco JSON válido (sem comentários, sem introdução e sem explicações antes ou depois). O JSON deve ser um ARRAY com as ${config.numQuestions} questões.
+1. Retorne APENAS um bloco JSON válido (sem comentários, sem introdução e sem explicações antes ou depois). O JSON deve ser um ARRAY com as ${totalQuestions} questões.${isMultiTopic ? ` Respeite rigorosamente a contagem de cada tema listado acima!` : ''}
 2. Cada objeto de questão deve conter EXATAMENTE as seguintes chaves:
    - "type": "short_answer" (resposta dissertativa curta de 1 a 3 frases) ou "fill_blank" (frase com lacuna).
    - "prompt": O enunciado da pergunta. Para questões de "fill_blank", a frase DEVE conter "_____" (cinco underlines) no local do termo a ser preenchido.
@@ -221,12 +246,12 @@ REGRAS ESTRITAS DE FORMATAÇÃO DO ARQUIVO:
    - "required_keywords": Array de 1 a 4 termos conceituais essenciais que DEVEM obrigatoriamente estar na resposta do aluno.
    - "thresholds": Objeto com { "full": 0.82, "partial": 0.65 }.
    - "rubric_explanation": Explicação concisa do critério de correção e justificativa da resposta correta.
-   - "timeLimit": Tempo em segundos para o aluno responder (entre 30 e 60 segundos).
+   - "timeLimit": ${targetTime} (tempo em segundos para o aluno responder).
 
 EXEMPLO EXATO DO FORMATO ESPERADO:
 \`\`\`json
 ${sampleJson}
 \`\`\`
 
-Agora, elabore as ${config.numQuestions} questões sobre "${config.topic}" e responda APENAS com o código JSON pronto para salvar como arquivo:`;
+Agora, elabore as ${totalQuestions} questões solicitadas${isMultiTopic ? ' seguindo a exata divisão por temas' : ` sobre "${config.topic}"`} e responda APENAS com o código JSON pronto para salvar como arquivo:`;
 }
