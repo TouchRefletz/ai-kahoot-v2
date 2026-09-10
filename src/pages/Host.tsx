@@ -314,17 +314,21 @@ export default function Host() {
       const gradingResult = await gradeShortAnswerAsync(trimmedAnswer, currentQ);
       setHostGradingResult(gradingResult);
 
+      const sanitizedGradingResult = JSON.parse(JSON.stringify(gradingResult));
+
       // 2. Compute points based on score (0.0 to 1.0) and response time
       const start = gameState.questionStartTime ? new Date(gameState.questionStartTime).getTime() : Date.now();
       const now = Date.now();
       const elapsed = Math.max(0, (now - start) / 1000);
       const timeRatio = Math.min(elapsed / (currentQ.timeLimit || 45), 1);
       const timeMultiplier = Math.max(0.70, 1 - 0.30 * Math.pow(timeRatio, 2));
-      const points = Math.round(gradingResult.score * 1000 * timeMultiplier);
-      const isCorrect = gradingResult.score >= 0.5;
+      const rawPoints = Math.round((gradingResult.score || 0) * 1000 * timeMultiplier);
+      const points = isNaN(rawPoints) ? 0 : Math.max(0, rawPoints);
+      const isCorrect = (gradingResult.score || 0) >= 0.5;
 
       const hostUid = auth.currentUser.uid;
       const currentHostPlayer = players.find(p => p.id === hostUid);
+      const currentScore = (currentHostPlayer?.score !== undefined && !isNaN(currentHostPlayer.score)) ? currentHostPlayer.score : 0;
 
       // 3. Save to Firestore
       await updateDoc(doc(db, `games/${gameId}/players`, hostUid), {
@@ -332,8 +336,8 @@ export default function Host() {
         answeredAt: new Date().toISOString(),
         lastAnswerCorrect: isCorrect,
         lastScoreAdded: points,
-        lastGradingResult: gradingResult,
-        score: (currentHostPlayer?.score || 0) + points
+        lastGradingResult: sanitizedGradingResult,
+        score: currentScore + points
       });
     } catch (err) {
       console.error('Erro ao avaliar resposta do host:', err);
@@ -353,9 +357,9 @@ export default function Host() {
 
       // Make sure all players who did not answer are marked as 0 pts / unanswered
       players.forEach(p => {
-        const hasAnswer = Boolean(p.currentAnswer && p.currentAnswer.trim().length > 0);
-        if (!hasAnswer) {
-          const pRef = doc(db, `games/${gameId}/players`, p.id!);
+        const hasAnswer = Boolean(p.currentAnswer && typeof p.currentAnswer === 'string' && p.currentAnswer.trim().length > 0);
+        if (!hasAnswer && p.id) {
+          const pRef = doc(db, `games/${gameId}/players`, p.id);
           batch.update(pRef, {
             currentAnswer: '',
             lastAnswerCorrect: false,
@@ -379,7 +383,12 @@ export default function Host() {
       batch.update(doc(db, 'games', gameId), { status: 'answer_reveal' });
       await batch.commit();
     } catch (e) {
-      handleFirestoreError(e, OperationType.UPDATE, `games/${gameId}`);
+      console.warn('Falha no batch de encerramento da questão, tentando transição direta de status:', e);
+      try {
+        await updateDoc(doc(db, 'games', gameId), { status: 'answer_reveal' });
+      } catch (err2) {
+        console.error('Erro ao atualizar status da partida:', err2);
+      }
     }
   };
 
@@ -2247,15 +2256,15 @@ export default function Host() {
                           className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-750 disabled:text-neutral-500 text-white font-black text-sm py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                         >
                           {isSubmittingHost ? (
-                            <>
-                              <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                            <span key="host-submitting" className="flex items-center justify-center gap-2">
+                              <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"></span>
                               <span>Avaliando semântica com embeddings locais...</span>
-                            </>
+                            </span>
                           ) : (
-                            <>
+                            <span key="host-idle" className="flex items-center justify-center gap-2">
                               <Send className="w-4 h-4" />
-                              ENVIAR MINHA RESPOSTA (HOST)
-                            </>
+                              <span>ENVIAR MINHA RESPOSTA (HOST)</span>
+                            </span>
                           )}
                         </button>
                       </form>

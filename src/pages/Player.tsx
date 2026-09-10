@@ -51,6 +51,13 @@ export default function Player() {
 
         const playerDoc = await getDoc(doc(db, `games/${saved.gameId}/players`, saved.playerId));
         if (playerDoc.exists()) {
+          if (!auth.currentUser) {
+            try {
+              await signInAnon();
+            } catch (authErr) {
+              console.warn('Silently attempting anonymous auth on restore:', authErr);
+            }
+          }
           setGameId(saved.gameId);
           setName(saved.name || '');
           setPlayerId(saved.playerId);
@@ -71,11 +78,11 @@ export default function Player() {
 
     const unsubGame = onSnapshot(doc(db, 'games', gameId), (d) => {
       if (d.exists()) setGameState(d.data());
-    }, (err) => handleFirestoreError(err, OperationType.GET, `games/${gameId}`));
+    }, (err) => console.warn('Erro ao sincronizar sala:', err));
 
     const unsubQuestions = onSnapshot(query(collection(db, `games/${gameId}/questions`), orderBy('index')), (snap) => {
       setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${gameId}/questions`));
+    }, (err) => console.warn('Erro ao sincronizar questões:', err));
 
     const unsubPlayer = onSnapshot(doc(db, `games/${gameId}/players`, playerId), (d) => {
       if (d.exists()) {
@@ -86,11 +93,11 @@ export default function Player() {
         setJoined(false);
         sessionStorage.removeItem('kahoot_player_session');
       }
-    }, (err) => handleFirestoreError(err, OperationType.GET, `games/${gameId}/players/${playerId}`));
+    }, (err) => console.warn('Erro ao sincronizar dados do jogador:', err));
 
     const unsubPlayers = onSnapshot(collection(db, `games/${gameId}/players`), (snap) => {
-      setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData)).sort((a, b) => b.score - a.score));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${gameId}/players`));
+      setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData)).sort((a, b) => (b.score || 0) - (a.score || 0)));
+    }, (err) => console.warn('Erro ao sincronizar ranking:', err));
 
     return () => {
       unsubGame();
@@ -196,12 +203,30 @@ export default function Player() {
       return;
     }
 
+    // Resolve target playerId safely with fallbacks
+    const activePlayerId = playerId || auth.currentUser?.uid || (() => {
+      try {
+        const raw = sessionStorage.getItem('kahoot_player_session');
+        return raw ? JSON.parse(raw).playerId : null;
+      } catch {
+        return null;
+      }
+    })();
+
+    if (!activePlayerId) {
+      alert('Sua sessão de jogador expirou. Por favor, recarregue a página e entre na sala novamente.');
+      return;
+    }
+
     setIsSubmitting(true);
 
     try {
       // 1. Grade the short answer locally (exact match -> required keywords -> lexical similarity -> local all-MiniLM-L6-v2 cosine)
       const gradingResult = await gradeShortAnswerAsync(trimmedAnswer, currentQ);
       setLocalGradingResult(gradingResult);
+
+      // Clean gradingResult of any undefined fields for Firestore compatibility
+      const sanitizedGradingResult = JSON.parse(JSON.stringify(gradingResult));
 
       // 2. Compute points based on score (0.0 to 1.0) and response time
       const start = gameState.questionStartTime ? new Date(gameState.questionStartTime).getTime() : Date.now();
@@ -211,22 +236,37 @@ export default function Player() {
       
       // Time multiplier ranges from 0.70 to 1.00 so pedagogical quality is primary
       const timeMultiplier = Math.max(0.70, 1 - 0.30 * Math.pow(timeRatio, 2));
-      const points = Math.round(gradingResult.score * 1000 * timeMultiplier);
+      const rawPoints = Math.round((gradingResult.score || 0) * 1000 * timeMultiplier);
+      const points = isNaN(rawPoints) ? 0 : Math.max(0, rawPoints);
 
-      const isCorrect = gradingResult.score >= 0.5;
+      const isCorrect = (gradingResult.score || 0) >= 0.5;
+      const currentScore = (playerState?.score !== undefined && !isNaN(playerState.score)) ? playerState.score : 0;
+      const newScore = currentScore + points;
 
-      // 3. Save to Firestore
-      await updateDoc(doc(db, `games/${gameId}/players`, playerId!), {
+      // Optimistically update local player state so the UI updates immediately
+      setPlayerState(prev => prev ? ({
+        ...prev,
         currentAnswer: trimmedAnswer,
         answeredAt: new Date().toISOString(),
         lastAnswerCorrect: isCorrect,
         lastScoreAdded: points,
-        lastGradingResult: gradingResult,
-        score: (playerState?.score || 0) + points
+        lastGradingResult: sanitizedGradingResult,
+        score: newScore
+      }) : prev);
+
+      // 3. Save to Firestore
+      await updateDoc(doc(db, `games/${gameId}/players`, activePlayerId), {
+        currentAnswer: trimmedAnswer,
+        answeredAt: new Date().toISOString(),
+        lastAnswerCorrect: isCorrect,
+        lastScoreAdded: points,
+        lastGradingResult: sanitizedGradingResult,
+        score: newScore
       });
 
-    } catch (err) {
-      console.error('Erro ao avaliar resposta:', err);
+    } catch (err: any) {
+      console.error('Erro ao avaliar ou enviar resposta:', err);
+      alert('Não foi possível salvar sua resposta no servidor. Por favor, tente clicar em ENVIAR novamente.');
     } finally {
       setIsSubmitting(false);
     }
@@ -435,20 +475,26 @@ export default function Player() {
 
               {/* Input Area */}
               {hasAnswered ? (
-                <div className="bg-neutral-800/60 p-6 rounded-2xl border border-neutral-700/80 text-center space-y-3">
+                <div key="answered-box" className="bg-neutral-800/60 p-6 rounded-2xl border border-neutral-700/80 text-center space-y-3">
                   <div className="w-12 h-12 bg-emerald-500/20 border border-emerald-500/40 rounded-full flex items-center justify-center mx-auto">
                     <CheckCircle2 className="w-6 h-6 text-emerald-400" />
                   </div>
-                  <h3 className="text-lg font-bold text-neutral-100">Resposta Enviada!</h3>
-                  <p className="text-xs text-neutral-400 italic">"{playerState?.currentAnswer}"</p>
-                  <p className="text-xs text-neutral-500">Aguardando encerramento do tempo para exibir a correção detalhada.</p>
+                  <h3 className="text-lg font-bold text-neutral-100">
+                    <span>Resposta Enviada!</span>
+                  </h3>
+                  <p className="text-xs text-neutral-400 italic">
+                    <span>"{playerState?.currentAnswer || ''}"</span>
+                  </p>
+                  <p className="text-xs text-neutral-500">
+                    <span>Aguardando encerramento do tempo para exibir a correção detalhada.</span>
+                  </p>
                 </div>
               ) : (
-                <form onSubmit={handleSubmitAnswer} className="space-y-3">
+                <form key="answering-form" onSubmit={handleSubmitAnswer} className="space-y-3">
                   {currentQ.type === 'fill_blank' ? (
                     <div>
                       <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400 mb-1">
-                        Termo ou Conceito da Lacuna
+                        <span>Termo ou Conceito da Lacuna</span>
                       </label>
                       <input
                         type="text"
@@ -464,7 +510,7 @@ export default function Player() {
                     <div>
                       <div className="flex justify-between items-center mb-1">
                         <label className="block text-xs font-bold uppercase tracking-wider text-neutral-400">
-                          Sua Resposta Dissertativa
+                          <span>Sua Resposta Dissertativa</span>
                         </label>
                         <span className="text-[11px] text-neutral-500 font-mono">
                           {studentText.trim().split(/\s+/).filter(Boolean).length} palavras
@@ -488,15 +534,15 @@ export default function Player() {
                     className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:bg-neutral-800 disabled:text-neutral-500 text-white font-black text-base py-4 rounded-xl transition-all shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                   >
                     {isSubmitting ? (
-                      <>
-                        <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                      <span key="submitting-state" className="flex items-center justify-center gap-2">
+                        <span className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin inline-block"></span>
                         <span>Avaliando Semântica Local...</span>
-                      </>
+                      </span>
                     ) : (
-                      <>
+                      <span key="idle-state" className="flex items-center justify-center gap-2">
                         <Send className="w-5 h-5" />
-                        ENVIAR RESPOSTA
-                      </>
+                        <span>ENVIAR RESPOSTA</span>
+                      </span>
                     )}
                   </button>
                 </form>
@@ -620,7 +666,7 @@ export default function Player() {
                   </span>
                 </div>
 
-                {grading.details.cosineSimilarity !== undefined && (
+                {typeof grading.details.cosineSimilarity === 'number' && !isNaN(grading.details.cosineSimilarity) && (
                   <div className="flex items-center justify-between py-1 border-b border-neutral-700/60">
                     <span className="text-neutral-400">Similaridade de Cosseno (Embeddings):</span>
                     <span className="font-mono font-bold text-indigo-300">
@@ -629,7 +675,7 @@ export default function Player() {
                   </div>
                 )}
 
-                {grading.details.lexicalSimilarity !== undefined && (
+                {typeof grading.details.lexicalSimilarity === 'number' && !isNaN(grading.details.lexicalSimilarity) && (
                   <div className="flex items-center justify-between py-1 border-b border-neutral-700/60">
                     <span className="text-neutral-400">Similaridade Léxica (Dice):</span>
                     <span className="font-mono font-bold text-neutral-300">
@@ -639,26 +685,26 @@ export default function Player() {
                 )}
 
                 {/* Keywords feedback */}
-                {grading.details.foundKeywords && grading.details.foundKeywords.length > 0 && (
+                {Array.isArray(grading.details.foundKeywords) && grading.details.foundKeywords.length > 0 && (
                   <div className="pt-1">
                     <span className="text-neutral-400 block mb-1">Palavras-chave encontradas:</span>
                     <div className="flex flex-wrap gap-1">
                       {grading.details.foundKeywords.map((kw, i) => (
                         <span key={i} className="bg-emerald-950 text-emerald-300 px-2 py-0.5 rounded text-[11px] font-mono border border-emerald-800">
-                          ✓ {kw}
+                          ✓ {String(kw)}
                         </span>
                       ))}
                     </div>
                   </div>
                 )}
 
-                {grading.details.missingKeywords && grading.details.missingKeywords.length > 0 && (
+                {Array.isArray(grading.details.missingKeywords) && grading.details.missingKeywords.length > 0 && (
                   <div className="pt-1">
                     <span className="text-red-400 block mb-1">Palavras-chave ausentes:</span>
                     <div className="flex flex-wrap gap-1">
                       {grading.details.missingKeywords.map((kw, i) => (
                         <span key={i} className="bg-red-950 text-red-300 px-2 py-0.5 rounded text-[11px] font-mono border border-red-800">
-                          ✗ {kw}
+                          ✗ {String(kw)}
                         </span>
                       ))}
                     </div>

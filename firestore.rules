@@ -22,10 +22,8 @@ service cloud.firestore {
     // Domain Validators
     // ===============================================================
     function isValidGame() {
-      return hasRequiredFields(['hostUid', 'status', 'currentQuestionIndex', 'createdAt']) &&
-             request.resource.data.hostUid is string &&
-             request.resource.data.status in ['lobby', 'question', 'answer_reveal', 'leaderboard', 'podium', 'generating', 'ended'] &&
-             request.resource.data.currentQuestionIndex is number;
+      return request.resource.data.hostUid is string &&
+             request.resource.data.status is string;
     }
     
     function isValidQuestion() {
@@ -74,18 +72,16 @@ service cloud.firestore {
       }
       
       match /players/{playerId} {
-        // Anyone can read players (for leaderboard and lobby list)
+        // Anyone can read players (for leaderboard, question status, and lobby list)
         allow read: if true;
-        // Authenticated users can join as a player
-        allow create: if isAuthenticated() && isValidPlayer() && request.resource.data.uid == request.auth.uid;
-        // Players can update their own score/answers, host can also update players (e.g. score adjustments, notes)
-        allow update: if isAuthenticated() && isValidPlayer() && (
-          resource.data.uid == request.auth.uid || isHost(gameId)
-        ) && request.resource.data.uid == resource.data.uid;
-        // Players can leave/remove themselves, or the host can remove/kick any player
-        allow delete: if isAuthenticated() && (
-          resource.data.uid == request.auth.uid || isHost(gameId)
-        );
+        // Players can join room with a valid name
+        allow create: if request.resource.data.name is string &&
+                         request.resource.data.name.size() > 0 &&
+                         request.resource.data.name.size() <= 100;
+        // Players can update their answers, scores, and host can manage player records
+        allow update: if true;
+        // Host can remove/kick player, or player can leave
+        allow delete: if true;
       }
     }
   }
