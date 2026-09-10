@@ -9,18 +9,13 @@ service cloud.firestore {
       return request.auth != null;
     }
     
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+    function isHost(gameId) {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
     }
     
     function hasRequiredFields(fields) {
       return request.resource.data.keys().hasAll(fields);
-    }
-    
-    function isValidStringLength(field, minLen, maxLen) {
-      return request.resource.data[field] is string &&
-        request.resource.data[field].size() >= minLen &&
-        request.resource.data[field].size() <= maxLen;
     }
 
     // ===============================================================
@@ -34,33 +29,11 @@ service cloud.firestore {
     }
     
     function isValidQuestion() {
-      return (
-        // Short answer & Fill blank schema
-        (
-          request.resource.data.keys().hasAll(['index', 'type', 'prompt', 'canonical_answers', 'reference_answer', 'timeLimit']) &&
-          request.resource.data.index is number &&
-          request.resource.data.type in ['short_answer', 'fill_blank'] &&
-          request.resource.data.prompt is string &&
-          request.resource.data.prompt.size() > 0 &&
-          request.resource.data.prompt.size() <= 2000 &&
-          request.resource.data.canonical_answers is list &&
-          request.resource.data.canonical_answers.size() <= 50 &&
-          request.resource.data.reference_answer is string &&
-          request.resource.data.reference_answer.size() <= 3000 &&
-          request.resource.data.timeLimit is number
-        ) ||
-        // Legacy multiple choice compatibility
-        (
-          hasRequiredFields(['index', 'question', 'choices', 'correctAnswerIndex', 'timeLimit']) &&
-          request.resource.data.index is number &&
-          request.resource.data.question is string &&
-          request.resource.data.question.size() < 500 &&
-          request.resource.data.choices is list &&
-          request.resource.data.choices.size() == 4 &&
-          request.resource.data.correctAnswerIndex is number &&
-          request.resource.data.timeLimit is number
-        )
-      );
+      return request.resource.data.keys().hasAll(['index', 'prompt']) &&
+             request.resource.data.index is number &&
+             request.resource.data.prompt is string &&
+             request.resource.data.prompt.size() > 0 &&
+             request.resource.data.prompt.size() <= 4000;
     }
     
     function isValidPlayer() {
@@ -68,8 +41,13 @@ service cloud.firestore {
              request.resource.data.uid is string &&
              request.resource.data.name is string &&
              request.resource.data.name.size() > 0 &&
-             request.resource.data.name.size() < 30 &&
+             request.resource.data.name.size() <= 100 &&
              request.resource.data.score is number;
+    }
+
+    // Health check collection for connection test
+    match /test/{docId} {
+      allow read: if true;
     }
 
     // ===============================================================
@@ -83,27 +61,33 @@ service cloud.firestore {
       allow create: if isAuthenticated() && isValidGame() && request.resource.data.hostUid == request.auth.uid;
       // Only the host can update the game state
       allow update: if isAuthenticated() && isValidGame() && resource.data.hostUid == request.auth.uid && request.resource.data.hostUid == resource.data.hostUid;
+      // Only the host can delete the game
+      allow delete: if isAuthenticated() && resource.data.hostUid == request.auth.uid;
       
       match /questions/{questionId} {
         // Anyone in the game can read questions
         allow read: if true;
-        // Only the host can add questions
-        allow create: if isAuthenticated() && isValidQuestion() && get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
-        // Only the host can update questions
-        allow update: if isAuthenticated() && isValidQuestion() && get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid;
+        // Host can add, update, and delete questions
+        allow create: if isHost(gameId) && isValidQuestion();
+        allow update: if isHost(gameId) && isValidQuestion();
+        allow delete: if isHost(gameId);
       }
       
       match /players/{playerId} {
-        // Anyone can read players (for leaderboard)
+        // Anyone can read players (for leaderboard and lobby list)
         allow read: if true;
         // Authenticated users can join as a player
         allow create: if isAuthenticated() && isValidPlayer() && request.resource.data.uid == request.auth.uid;
-        // Players can update their own score/answers, host can also update players (e.g. kick)
+        // Players can update their own score/answers, host can also update players (e.g. score adjustments, notes)
         allow update: if isAuthenticated() && isValidPlayer() && (
-          resource.data.uid == request.auth.uid || 
-          get(/databases/$(database)/documents/games/$(gameId)).data.hostUid == request.auth.uid
+          resource.data.uid == request.auth.uid || isHost(gameId)
         ) && request.resource.data.uid == resource.data.uid;
+        // Players can leave/remove themselves, or the host can remove/kick any player
+        allow delete: if isAuthenticated() && (
+          resource.data.uid == request.auth.uid || isHost(gameId)
+        );
       }
     }
   }
 }
+

@@ -7,7 +7,7 @@ import { gradeShortAnswerAsync } from '../lib/grading';
 import { Question, PlayerData, GradingResult } from '../lib/types';
 import {
   BrainCircuit, CheckCircle2, XCircle, Play, Trophy, Send,
-  HelpCircle, Sparkles, Clock, AlertTriangle, FileCheck
+  HelpCircle, Sparkles, Clock, AlertTriangle, FileCheck, UserX
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
@@ -21,6 +21,7 @@ export default function Player() {
   const [name, setName] = useState('');
   const [joined, setJoined] = useState(false);
   const [playerId, setPlayerId] = useState<string | null>(null);
+  const [wasKicked, setWasKicked] = useState(false);
 
   const [gameState, setGameState] = useState<any>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -34,6 +35,37 @@ export default function Player() {
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
   const [joinedMidGame, setJoinedMidGame] = useState(false);
 
+  // Auto-restore session from sessionStorage if user accidentally refreshed the page
+  useEffect(() => {
+    const restoreSession = async () => {
+      try {
+        const raw = sessionStorage.getItem('kahoot_player_session');
+        if (!raw) return;
+        const saved = JSON.parse(raw);
+        if (!saved.gameId || !saved.playerId) return;
+
+        // If URL has a specific gameId that is different from saved, ignore
+        if (urlGameId && urlGameId.toUpperCase() !== saved.gameId.toUpperCase()) {
+          return;
+        }
+
+        const playerDoc = await getDoc(doc(db, `games/${saved.gameId}/players`, saved.playerId));
+        if (playerDoc.exists()) {
+          setGameId(saved.gameId);
+          setName(saved.name || '');
+          setPlayerId(saved.playerId);
+          setJoined(true);
+        } else {
+          sessionStorage.removeItem('kahoot_player_session');
+        }
+      } catch (err) {
+        console.warn('Não foi possível restaurar sessão prévia do jogador:', err);
+      }
+    };
+
+    restoreSession();
+  }, [urlGameId]);
+
   useEffect(() => {
     if (!joined || !gameId || !playerId) return;
 
@@ -46,7 +78,14 @@ export default function Player() {
     }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${gameId}/questions`));
 
     const unsubPlayer = onSnapshot(doc(db, `games/${gameId}/players`, playerId), (d) => {
-      if (d.exists()) setPlayerState(d.data() as PlayerData);
+      if (d.exists()) {
+        setPlayerState(d.data() as PlayerData);
+      } else {
+        // Player document was deleted by the host or room closed!
+        setWasKicked(true);
+        setJoined(false);
+        sessionStorage.removeItem('kahoot_player_session');
+      }
     }, (err) => handleFirestoreError(err, OperationType.GET, `games/${gameId}/players/${playerId}`));
 
     const unsubPlayers = onSnapshot(collection(db, `games/${gameId}/players`), (snap) => {
@@ -131,6 +170,12 @@ export default function Player() {
         joinedAt: new Date().toISOString()
       });
 
+      sessionStorage.setItem('kahoot_player_session', JSON.stringify({
+        gameId: gameId.toUpperCase(),
+        playerId: uid,
+        name: name.trim()
+      }));
+
       setGameId(gameId.toUpperCase());
       setJoined(true);
     } catch (err) {
@@ -186,6 +231,34 @@ export default function Player() {
       setIsSubmitting(false);
     }
   };
+
+  if (wasKicked) {
+    return (
+      <div className="min-h-screen bg-neutral-900 flex flex-col items-center justify-center p-4 font-sans text-white">
+        <div className="max-w-md w-full bg-neutral-800/95 p-8 rounded-3xl shadow-2xl border border-red-500/30 text-center space-y-5">
+          <div className="w-16 h-16 bg-red-500/20 border border-red-500/40 rounded-2xl flex items-center justify-center mx-auto text-red-400">
+            <UserX className="w-9 h-9" />
+          </div>
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black tracking-tight text-white">Removido da Sessão</h1>
+            <p className="text-sm text-neutral-400">
+              Você foi desconectado desta sala pelo organizador ou a sessão foi encerrada.
+            </p>
+          </div>
+          <button
+            onClick={() => {
+              setWasKicked(false);
+              setJoined(false);
+              navigate('/');
+            }}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20 cursor-pointer"
+          >
+            Voltar ao Início
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   if (!joined) {
     return (

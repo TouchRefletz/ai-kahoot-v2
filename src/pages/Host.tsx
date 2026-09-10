@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { doc, setDoc, collection, onSnapshot, query, orderBy, updateDoc, writeBatch, deleteDoc } from 'firebase/firestore';
+import { useNavigate, useParams } from 'react-router-dom';
+import { doc, setDoc, getDoc, collection, onSnapshot, query, orderBy, updateDoc, writeBatch, deleteDoc } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { handleFirestoreError, OperationType } from '../lib/firestore';
 import { computeEmbedding } from '../lib/embeddings';
@@ -14,14 +14,17 @@ import {
   Copy, Check, Download, Sparkles, PlusCircle, AlertCircle, ChevronRight,
   Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers,
   Gamepad2, Send, Clock, FastForward, Medal, Sliders, Edit3, Plus, Minus,
-  RotateCcw, Award
+  RotateCcw, Award, UserX, Share2, LogOut
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
 
 export default function Host() {
+  const { gameId: routeGameId } = useParams();
   const navigate = useNavigate();
-  const [gameId, setGameId] = useState<string | null>(null);
+  const [gameId, setGameId] = useState<string | null>(routeGameId?.toUpperCase() || null);
+  const [isLoadingSession, setIsLoadingSession] = useState(true);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   // Tabs in Host setup: 'prompt_builder' | 'import' | 'manual'
   const [activeTab, setActiveTab] = useState<'prompt_builder' | 'import' | 'manual'>('prompt_builder');
@@ -95,59 +98,105 @@ export default function Host() {
       return;
     }
 
-    // Create session on mount
-    const newGameId = Math.random().toString(36).substring(2, 8).toUpperCase();
-    setGameId(newGameId);
+    let isMounted = true;
+    let unsubGame: (() => void) | undefined;
+    let unsubPlayers: (() => void) | undefined;
+    let unsubQuestions: (() => void) | undefined;
 
-    const initGame = async () => {
-      try {
-        await setDoc(doc(db, 'games', newGameId), {
-          hostUid: auth.currentUser!.uid,
-          status: 'lobby',
-          currentQuestionIndex: 0,
-          createdAt: new Date().toISOString()
-        });
+    const setupHostSession = async () => {
+      setIsLoadingSession(true);
+      const currentUser = auth.currentUser!;
 
-        // Automatically register Host as player so the host can play and compete in the ranking
-        const initialName = auth.currentUser!.displayName 
-          ? `Host (${auth.currentUser!.displayName})` 
-          : 'Host';
+      // 1. Check candidate Game IDs (from route /host/:gameId, query param, or localStorage)
+      const urlCandidate = routeGameId?.trim().toUpperCase();
+      const storageCandidate = localStorage.getItem('kahoot_host_active_game_id')?.trim().toUpperCase();
+      const candidateId = urlCandidate || storageCandidate;
 
-        await setDoc(doc(db, `games/${newGameId}/players`, auth.currentUser!.uid), {
-          uid: auth.currentUser!.uid,
-          name: initialName,
-          score: 0,
-          currentAnswer: null,
-          lastAnswerCorrect: null,
-          lastScoreAdded: 0,
-          lastGradingResult: null,
-          joinedAt: new Date().toISOString()
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.CREATE, `games/${newGameId}`);
+      let targetGameId: string | null = null;
+
+      if (candidateId) {
+        try {
+          const snap = await getDoc(doc(db, 'games', candidateId));
+          if (snap.exists()) {
+            const data = snap.data();
+            // Verify ownership and that game isn't marked as permanently ended
+            if (data.hostUid === currentUser.uid && data.status !== 'ended') {
+              targetGameId = candidateId;
+            }
+          }
+        } catch (err) {
+          console.warn('Não foi possível restaurar sessão candidata:', err);
+        }
       }
+
+      // 2. If no valid active room found to restore, create a new one
+      if (!targetGameId) {
+        targetGameId = Math.random().toString(36).substring(2, 8).toUpperCase();
+        try {
+          await setDoc(doc(db, 'games', targetGameId), {
+            hostUid: currentUser.uid,
+            status: 'lobby',
+            currentQuestionIndex: 0,
+            createdAt: new Date().toISOString()
+          });
+
+          // Register Host as player
+          const initialName = currentUser.displayName 
+            ? `Host (${currentUser.displayName})`.slice(0, 30)
+            : 'Host';
+
+          await setDoc(doc(db, `games/${targetGameId}/players`, currentUser.uid), {
+            uid: currentUser.uid,
+            name: initialName,
+            score: 0,
+            currentAnswer: null,
+            lastAnswerCorrect: null,
+            lastScoreAdded: 0,
+            lastGradingResult: null,
+            joinedAt: new Date().toISOString()
+          });
+        } catch (err) {
+          handleFirestoreError(err, OperationType.CREATE, `games/${targetGameId}`);
+          return;
+        }
+      }
+
+      if (!isMounted) return;
+
+      // 3. Persist and align URL
+      setGameId(targetGameId);
+      localStorage.setItem('kahoot_host_active_game_id', targetGameId);
+      if (routeGameId !== targetGameId) {
+        navigate(`/host/${targetGameId}`, { replace: true });
+      }
+
+      // 4. Attach real-time snapshot listeners
+      unsubGame = onSnapshot(doc(db, 'games', targetGameId), (d) => {
+        if (d.exists()) {
+          setGameState(d.data());
+        }
+      }, (err) => handleFirestoreError(err, OperationType.GET, `games/${targetGameId}`));
+
+      unsubPlayers = onSnapshot(collection(db, `games/${targetGameId}/players`), (snap) => {
+        setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData)).sort((a, b) => b.score - a.score));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${targetGameId}/players`));
+
+      unsubQuestions = onSnapshot(query(collection(db, `games/${targetGameId}/questions`), orderBy('index')), (snap) => {
+        setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
+      }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${targetGameId}/questions`));
+
+      setIsLoadingSession(false);
     };
-    initGame();
 
-    // Listeners
-    const unsubGame = onSnapshot(doc(db, 'games', newGameId), (d) => {
-      if (d.exists()) setGameState(d.data());
-    }, (err) => handleFirestoreError(err, OperationType.GET, `games/${newGameId}`));
-
-    const unsubPlayers = onSnapshot(collection(db, `games/${newGameId}/players`), (snap) => {
-      setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData)).sort((a, b) => b.score - a.score));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${newGameId}/players`));
-
-    const unsubQuestions = onSnapshot(query(collection(db, `games/${newGameId}/questions`), orderBy('index')), (snap) => {
-      setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
-    }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${newGameId}/questions`));
+    setupHostSession();
 
     return () => {
-      unsubGame();
-      unsubPlayers();
-      unsubQuestions();
+      isMounted = false;
+      if (unsubGame) unsubGame();
+      if (unsubPlayers) unsubPlayers();
+      if (unsubQuestions) unsubQuestions();
     };
-  }, [navigate]);
+  }, [routeGameId, navigate]);
 
   // Reset host answer when question changes
   useEffect(() => {
@@ -794,12 +843,89 @@ export default function Host() {
     }
   };
 
-  if (!gameId || !gameState) {
+  // --- KICK / REMOVE PLAYER FROM ROOM ---
+  const handleKickPlayer = async (player: PlayerData) => {
+    if (!gameId || !player.id) return;
+    const isHost = player.id === auth.currentUser?.uid;
+    if (isHost) {
+      alert('Para parar de participar como jogador, desative a opção "Jogar também nesta sessão".');
+      return;
+    }
+
+    const confirmKick = confirm(`Deseja realmente remover "${player.name}" desta sala?`);
+    if (!confirmKick) return;
+
+    try {
+      await deleteDoc(doc(db, `games/${gameId}/players`, player.id));
+    } catch (err) {
+      console.error('Erro ao remover jogador:', err);
+      alert('Não foi possível remover o participante. Verifique se possui permissão de host.');
+    }
+  };
+
+  // --- START BRAND NEW ROOM ---
+  const handleCreateNewRoom = async () => {
+    const confirmNew = confirm(
+      'Deseja criar uma nova sala? A sala atual será finalizada e você receberá um novo PIN para compartilhar.'
+    );
+    if (!confirmNew) return;
+
+    if (gameId) {
+      try {
+        await updateDoc(doc(db, 'games', gameId), { status: 'ended' });
+      } catch (err) {
+        console.warn('Erro ao finalizar sessão anterior:', err);
+      }
+    }
+
+    localStorage.removeItem('kahoot_host_active_game_id');
+    const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    try {
+      await setDoc(doc(db, 'games', newId), {
+        hostUid: auth.currentUser!.uid,
+        status: 'lobby',
+        currentQuestionIndex: 0,
+        createdAt: new Date().toISOString()
+      });
+
+      const initialName = auth.currentUser!.displayName 
+        ? `Host (${auth.currentUser!.displayName})`.slice(0, 30)
+        : 'Host';
+
+      await setDoc(doc(db, `games/${newId}/players`, auth.currentUser!.uid), {
+        uid: auth.currentUser!.uid,
+        name: initialName,
+        score: 0,
+        currentAnswer: null,
+        lastAnswerCorrect: null,
+        lastScoreAdded: 0,
+        lastGradingResult: null,
+        joinedAt: new Date().toISOString()
+      });
+
+      setGameId(newId);
+      localStorage.setItem('kahoot_host_active_game_id', newId);
+      navigate(`/host/${newId}`, { replace: true });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `games/${newId}`);
+    }
+  };
+
+  // --- COPY INVITE LINK ---
+  const handleCopyInviteLink = () => {
+    if (!gameId) return;
+    const url = `${window.location.origin}/play/${gameId}`;
+    navigator.clipboard.writeText(url);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2500);
+  };
+
+  if (isLoadingSession || !gameId || !gameState) {
     return (
       <div className="min-h-screen bg-neutral-900 flex items-center justify-center text-white font-sans">
         <div className="flex flex-col items-center gap-4">
           <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="font-semibold text-neutral-400">Iniciando sala do professor...</p>
+          <p className="font-semibold text-neutral-400">Restaurando sessão do professor...</p>
         </div>
       </div>
     );
@@ -827,9 +953,9 @@ export default function Host() {
           </div>
         </div>
 
-        <div className="flex items-center gap-3 sm:gap-4">
+        <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
           {hostPlays && (
-            <div className="hidden sm:flex items-center gap-2 bg-indigo-950/70 border border-indigo-700/60 px-3 py-1.5 rounded-xl text-xs">
+            <div className="hidden md:flex items-center gap-2 bg-indigo-950/70 border border-indigo-700/60 px-3 py-1.5 rounded-xl text-xs">
               <Gamepad2 className="w-4 h-4 text-indigo-400" />
               <span className="text-neutral-400">Host Jogando:</span>
               <span className="text-indigo-300 font-bold">{hostNickname}</span>
@@ -837,13 +963,45 @@ export default function Host() {
             </div>
           )}
 
-          <div className="bg-neutral-800/90 px-5 py-2 rounded-xl border border-neutral-700 text-center">
+          {/* Copy Link Button */}
+          <button
+            type="button"
+            onClick={handleCopyInviteLink}
+            className="bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-bold px-3 py-2 rounded-xl border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Copiar link direto para os alunos entrarem"
+          >
+            {copiedLink ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="text-emerald-400">Link Copiado!</span>
+              </>
+            ) : (
+              <>
+                <Share2 className="w-3.5 h-3.5 text-indigo-400" />
+                <span>Link dos Alunos</span>
+              </>
+            )}
+          </button>
+
+          {/* New Room Button */}
+          <button
+            type="button"
+            onClick={handleCreateNewRoom}
+            className="bg-neutral-850 hover:bg-neutral-750 text-neutral-300 hover:text-white text-xs font-bold px-3 py-2 rounded-xl border border-neutral-750 transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Iniciar uma nova sala com um novo código PIN"
+          >
+            <Plus className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Nova Sala</span>
+          </button>
+
+          {/* PIN Display */}
+          <div className="bg-neutral-800/90 px-4 py-1.5 rounded-xl border border-neutral-700 text-center min-w-[110px]">
             <div className="flex items-center justify-center gap-1.5">
-              <p className="text-[10px] text-neutral-400 uppercase tracking-widest font-extrabold">PIN DA SALA</p>
+              <p className="text-[9px] text-neutral-400 uppercase tracking-widest font-extrabold">PIN DA SALA</p>
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
             </div>
-            <p className="text-2xl font-black tracking-widest text-indigo-400 font-mono">{gameId}</p>
-            <p className="text-[10px] text-emerald-400 font-semibold tracking-tight">Entrada livre durante a partida</p>
+            <p className="text-xl font-black tracking-widest text-indigo-400 font-mono leading-none my-0.5">{gameId}</p>
+            <p className="text-[9px] text-emerald-400 font-semibold tracking-tight">Entrada livre contínua</p>
           </div>
         </div>
       </header>
@@ -1677,7 +1835,19 @@ export default function Host() {
                             </span>
                           )}
                         </div>
-                        <span className="text-indigo-400 font-mono font-bold text-sm">{p.score} pts</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-indigo-400 font-mono font-bold text-sm">{p.score} pts</span>
+                          {!isHost && (
+                            <button
+                              type="button"
+                              onClick={() => handleKickPlayer(p)}
+                              title={`Remover ${p.name} da sala`}
+                              className="p-1 text-neutral-400 hover:text-red-400 hover:bg-red-950/60 rounded-lg transition-colors cursor-pointer"
+                            >
+                              <UserX className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })
@@ -2095,6 +2265,17 @@ export default function Host() {
                             <Sliders className="w-3.5 h-3.5 text-amber-400" />
                             {isEditingThis ? 'Fechar' : 'Ajustar Pontos'}
                           </button>
+
+                          {!isHost && (
+                            <button
+                              type="button"
+                              onClick={() => handleKickPlayer(p)}
+                              title={`Remover ${p.name} da sala`}
+                              className="text-neutral-400 hover:text-red-400 p-1.5 rounded-lg bg-neutral-800 hover:bg-red-950/60 border border-neutral-700 hover:border-red-800 transition-colors cursor-pointer"
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
 
@@ -2362,7 +2543,19 @@ export default function Host() {
                         )}
                       </div>
                     </div>
-                    <span className="text-xl font-black text-indigo-400 font-mono">{p.score} pts</span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-xl font-black text-indigo-400 font-mono">{p.score} pts</span>
+                      {!isHost && (
+                        <button
+                          type="button"
+                          onClick={() => handleKickPlayer(p)}
+                          title={`Remover ${p.name} da sala`}
+                          className="p-1.5 text-neutral-500 hover:text-red-400 hover:bg-red-950/60 rounded-lg transition-colors cursor-pointer"
+                        >
+                          <UserX className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 );
               })}

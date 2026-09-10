@@ -30,8 +30,10 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/host/:gameId?" element={<Host />} />
           <Route path="/host" element={<Host />} />
           <Route path="/play/:gameId?" element={<Player />} />
+          <Route path="*" element={<Home />} />
         </Routes>
       </BrowserRouter>
     </ErrorBoundary>
