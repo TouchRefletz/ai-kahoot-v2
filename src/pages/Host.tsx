@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { doc, setDoc, getDoc, collection, onSnapshot, query, orderBy, updateDoc, writeBatch, deleteDoc } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { db, auth, signInWithGoogle } from '../firebase';
 import { handleFirestoreError, OperationType } from '../lib/firestore';
 import { computeEmbedding } from '../lib/embeddings';
 import { gradeShortAnswerAsync } from '../lib/grading';
@@ -14,7 +14,7 @@ import {
   Copy, Check, Download, Sparkles, PlusCircle, AlertCircle, ChevronRight,
   Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers,
   Gamepad2, Send, Clock, FastForward, Medal, Sliders, Edit3, Plus, Minus,
-  RotateCcw, Award, UserX, Share2, LogOut
+  RotateCcw, Award, UserX, Share2, LogOut, LogIn
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
@@ -25,6 +25,10 @@ export default function Host() {
   const [gameId, setGameId] = useState<string | null>(routeGameId?.toUpperCase() || null);
   const [isLoadingSession, setIsLoadingSession] = useState(true);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [roomError, setRoomError] = useState<{
+    type: 'not_found' | 'not_owner' | 'ended';
+    id: string;
+  } | null>(null);
 
   // Tabs in Host setup: 'prompt_builder' | 'import' | 'manual'
   const [activeTab, setActiveTab] = useState<'prompt_builder' | 'import' | 'manual'>('prompt_builder');
@@ -94,7 +98,7 @@ export default function Host() {
 
   useEffect(() => {
     if (!auth.currentUser) {
-      navigate('/');
+      setIsLoadingSession(false);
       return;
     }
 
@@ -105,31 +109,94 @@ export default function Host() {
 
     const setupHostSession = async () => {
       setIsLoadingSession(true);
+      setRoomError(null);
       const currentUser = auth.currentUser!;
 
-      // 1. Check candidate Game IDs (from route /host/:gameId, query param, or localStorage)
-      const urlCandidate = routeGameId?.trim().toUpperCase();
-      const storageCandidate = localStorage.getItem('kahoot_host_active_game_id')?.trim().toUpperCase();
-      const candidateId = urlCandidate || storageCandidate;
-
-      let targetGameId: string | null = null;
-
-      if (candidateId) {
+      // 1. If a specific room was requested via URL (/host/:gameId)
+      if (routeGameId) {
+        const pin = routeGameId.trim().toUpperCase();
         try {
-          const snap = await getDoc(doc(db, 'games', candidateId));
-          if (snap.exists()) {
-            const data = snap.data();
-            // Verify ownership and that game isn't marked as permanently ended
-            if (data.hostUid === currentUser.uid && data.status !== 'ended') {
-              targetGameId = candidateId;
+          const snap = await getDoc(doc(db, 'games', pin));
+          if (!snap.exists()) {
+            if (isMounted) {
+              setRoomError({ type: 'not_found', id: pin });
+              setIsLoadingSession(false);
             }
+            return;
           }
+
+          const data = snap.data();
+          if (data.hostUid !== currentUser.uid) {
+            if (isMounted) {
+              setRoomError({ type: 'not_owner', id: pin });
+              setIsLoadingSession(false);
+            }
+            return;
+          }
+
+          if (data.status === 'ended') {
+            if (isMounted) {
+              setRoomError({ type: 'ended', id: pin });
+              setIsLoadingSession(false);
+            }
+            return;
+          }
+
+          // Valid ownership and room exists!
+          if (!isMounted) return;
+          setGameId(pin);
+          localStorage.setItem('kahoot_host_active_game_id', pin);
+
+          // Attach real-time snapshot listeners
+          unsubGame = onSnapshot(doc(db, 'games', pin), (d) => {
+            if (d.exists()) {
+              setGameState(d.data());
+            } else {
+              setRoomError({ type: 'not_found', id: pin });
+            }
+          }, (err) => handleFirestoreError(err, OperationType.GET, `games/${pin}`));
+
+          unsubPlayers = onSnapshot(collection(db, `games/${pin}/players`), (snap) => {
+            const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData));
+            list.sort((a, b) => b.score - a.score);
+            setPlayers(list);
+          }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${pin}/players`));
+
+          unsubQuestions = onSnapshot(query(collection(db, `games/${pin}/questions`), orderBy('index')), (snap) => {
+            setQuestions(snap.docs.map(d => ({ id: d.id, ...d.data() } as Question)));
+          }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${pin}/questions`));
+
+          setIsLoadingSession(false);
+          return;
         } catch (err) {
-          console.warn('Não foi possível restaurar sessão candidata:', err);
+          console.warn('Erro ao verificar sala do host:', err);
+          if (isMounted) {
+            setRoomError({ type: 'not_found', id: pin });
+            setIsLoadingSession(false);
+          }
+          return;
         }
       }
 
-      // 2. If no valid active room found to restore, create a new one
+      // 2. If no room in URL, check localStorage for an active session to resume
+      const storageCandidate = localStorage.getItem('kahoot_host_active_game_id')?.trim().toUpperCase();
+      let targetGameId: string | null = null;
+
+      if (storageCandidate) {
+        try {
+          const snap = await getDoc(doc(db, 'games', storageCandidate));
+          if (snap.exists()) {
+            const data = snap.data();
+            if (data.hostUid === currentUser.uid && data.status !== 'ended') {
+              targetGameId = storageCandidate;
+            }
+          }
+        } catch (err) {
+          console.warn('Não foi possível restaurar sessão salva:', err);
+        }
+      }
+
+      // 3. If no valid active room found, create a new one
       if (!targetGameId) {
         targetGameId = Math.random().toString(36).substring(2, 8).toUpperCase();
         try {
@@ -163,14 +230,12 @@ export default function Host() {
 
       if (!isMounted) return;
 
-      // 3. Persist and align URL
+      // 4. Persist and align URL
       setGameId(targetGameId);
       localStorage.setItem('kahoot_host_active_game_id', targetGameId);
-      if (routeGameId !== targetGameId) {
-        navigate(`/host/${targetGameId}`, { replace: true });
-      }
+      navigate(`/host/${targetGameId}`, { replace: true });
 
-      // 4. Attach real-time snapshot listeners
+      // 5. Attach real-time snapshot listeners
       unsubGame = onSnapshot(doc(db, 'games', targetGameId), (d) => {
         if (d.exists()) {
           setGameState(d.data());
@@ -178,7 +243,9 @@ export default function Host() {
       }, (err) => handleFirestoreError(err, OperationType.GET, `games/${targetGameId}`));
 
       unsubPlayers = onSnapshot(collection(db, `games/${targetGameId}/players`), (snap) => {
-        setPlayers(snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData)).sort((a, b) => b.score - a.score));
+        const list = snap.docs.map(d => ({ id: d.id, ...d.data() } as PlayerData));
+        list.sort((a, b) => b.score - a.score);
+        setPlayers(list);
       }, (err) => handleFirestoreError(err, OperationType.LIST, `games/${targetGameId}/players`));
 
       unsubQuestions = onSnapshot(query(collection(db, `games/${targetGameId}/questions`), orderBy('index')), (snap) => {
@@ -920,6 +987,155 @@ export default function Host() {
     setTimeout(() => setCopiedLink(false), 2500);
   };
 
+  const handleForceCreateRoom = async () => {
+    if (!auth.currentUser) {
+      await signInWithGoogle();
+      return;
+    }
+    setRoomError(null);
+    setIsLoadingSession(true);
+    const newId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    try {
+      await setDoc(doc(db, 'games', newId), {
+        hostUid: auth.currentUser.uid,
+        status: 'lobby',
+        currentQuestionIndex: 0,
+        createdAt: new Date().toISOString()
+      });
+      const initialName = auth.currentUser.displayName 
+        ? `Host (${auth.currentUser.displayName})`.slice(0, 30)
+        : 'Host';
+      await setDoc(doc(db, `games/${newId}/players`, auth.currentUser.uid), {
+        uid: auth.currentUser.uid,
+        name: initialName,
+        score: 0,
+        currentAnswer: null,
+        lastAnswerCorrect: null,
+        lastScoreAdded: 0,
+        lastGradingResult: null,
+        joinedAt: new Date().toISOString()
+      });
+      localStorage.setItem('kahoot_host_active_game_id', newId);
+      navigate(`/host/${newId}`, { replace: true });
+    } catch (err) {
+      handleFirestoreError(err, OperationType.CREATE, `games/${newId}`);
+    } finally {
+      setIsLoadingSession(false);
+    }
+  };
+
+  // 1. Not Authenticated Screen
+  if (!auth.currentUser) {
+    return (
+      <div className="min-h-screen bg-neutral-900 flex flex-col items-center justify-center p-4 font-sans text-white">
+        <div className="max-w-md w-full bg-neutral-800/95 p-8 rounded-3xl shadow-2xl border border-neutral-700 space-y-6 text-center">
+          <div className="w-16 h-16 bg-indigo-600/20 border border-indigo-500/30 rounded-2xl flex items-center justify-center mx-auto">
+            <BrainCircuit className="w-9 h-9 text-indigo-400" />
+          </div>
+          <div className="space-y-1">
+            <h1 className="text-2xl font-black tracking-tight">Sala do Professor (Host)</h1>
+            {routeGameId ? (
+              <p className="text-sm text-neutral-300">
+                Sessão PIN: <span className="font-mono font-black text-indigo-400 text-base">{routeGameId.toUpperCase()}</span>
+              </p>
+            ) : (
+              <p className="text-sm text-neutral-400">Gerenciador de Provas Dissertativas</p>
+            )}
+            <p className="text-xs text-neutral-400 pt-1">
+              Faça login com a conta Google de Host para gerenciar as perguntas e jogadores.
+            </p>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            <button
+              onClick={() => signInWithGoogle()}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <LogIn className="w-5 h-5" />
+              Entrar como Professor (Host)
+            </button>
+
+            {routeGameId && (
+              <button
+                onClick={() => navigate(`/play/${routeGameId.toUpperCase()}`)}
+                className="w-full bg-neutral-700/80 hover:bg-neutral-700 text-emerald-300 hover:text-emerald-200 font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 border border-neutral-600/60 cursor-pointer text-sm"
+              >
+                <Gamepad2 className="w-4 h-4 text-emerald-400" />
+                Entrar como Aluno nesta Sala (/play/{routeGameId.toUpperCase()})
+              </button>
+            )}
+
+            <button
+              onClick={() => navigate('/')}
+              className="w-full text-xs text-neutral-400 hover:text-neutral-200 py-1 transition-colors cursor-pointer"
+            >
+              Voltar ao Início
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Room Error Screen (Not found, Not owner, or Ended)
+  if (roomError) {
+    return (
+      <div className="min-h-screen bg-neutral-900 flex flex-col items-center justify-center p-4 font-sans text-white">
+        <div className="max-w-md w-full bg-neutral-800/95 p-8 rounded-3xl shadow-2xl border border-neutral-700 space-y-6 text-center">
+          <div className={cn(
+            "w-16 h-16 rounded-2xl flex items-center justify-center mx-auto border",
+            roomError.type === 'not_owner' 
+              ? "bg-amber-500/20 border-amber-500/30 text-amber-400"
+              : "bg-red-500/20 border-red-500/30 text-red-400"
+          )}>
+            <AlertCircle className="w-9 h-9" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h1 className="text-2xl font-black tracking-tight text-white">
+              {roomError.type === 'not_found' && `Sala ${roomError.id} Não Encontrada`}
+              {roomError.type === 'not_owner' && `Acesso Restrito: Sala ${roomError.id}`}
+              {roomError.type === 'ended' && `Sala ${roomError.id} Encerrada`}
+            </h1>
+            <p className="text-sm text-neutral-400">
+              {roomError.type === 'not_found' && 'Não encontramos nenhuma sala ativa com este código. Verifique se o PIN está correto.'}
+              {roomError.type === 'not_owner' && 'Esta sala foi criada por outra conta Google de professor. Somente o criador pode acessar o painel de controle.'}
+              {roomError.type === 'ended' && 'Esta partida foi finalizada pelo organizador e não está mais aceitando conexões.'}
+            </p>
+          </div>
+
+          <div className="space-y-3 pt-2">
+            {roomError.id && (
+              <button
+                onClick={() => navigate(`/play/${roomError.id}`)}
+                className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-3.5 rounded-xl transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center gap-2 cursor-pointer"
+              >
+                <Gamepad2 className="w-5 h-5" />
+                Entrar como Aluno nesta Sala ({roomError.id})
+              </button>
+            )}
+
+            <button
+              onClick={handleForceCreateRoom}
+              className="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2 cursor-pointer text-sm"
+            >
+              <PlusCircle className="w-4 h-4" />
+              Criar Nova Sala como Professor
+            </button>
+
+            <button
+              onClick={() => navigate('/')}
+              className="w-full text-xs text-neutral-400 hover:text-neutral-200 py-1 transition-colors cursor-pointer"
+            >
+              Voltar ao Início
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 3. Loading State
   if (isLoadingSession || !gameId || !gameState) {
     return (
       <div className="min-h-screen bg-neutral-900 flex items-center justify-center text-white font-sans">
