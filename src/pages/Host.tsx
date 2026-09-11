@@ -14,10 +14,11 @@ import {
   Copy, Check, Download, Sparkles, PlusCircle, AlertCircle, ChevronRight,
   Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers,
   Gamepad2, Send, Clock, FastForward, Medal, Sliders, Edit3, Plus, Minus,
-  RotateCcw, Award, UserX, Share2, LogOut, LogIn
+  RotateCcw, Award, UserX, Share2, LogOut, LogIn, BookOpen
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
+import { saveQuiz } from '../lib/quizStorage';
 
 export default function Host() {
   const { gameId: routeGameId } = useParams();
@@ -273,6 +274,23 @@ export default function Host() {
       setHostGradingResult(null);
     }
   }, [gameState?.currentQuestionIndex, gameState?.status]);
+
+  // Auto-import preloaded quiz from Solo mode if requested
+  useEffect(() => {
+    if (!gameId || isProcessingImport) return;
+    const preloaded = sessionStorage.getItem('kahoot_preloaded_quiz');
+    if (preloaded && questions.length === 0) {
+      try {
+        const parsed = JSON.parse(preloaded);
+        sessionStorage.removeItem('kahoot_preloaded_quiz');
+        if (parsed.questions && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+          processAndImportText(JSON.stringify(parsed.questions), parsed.title);
+        }
+      } catch (err) {
+        console.warn('Erro ao carregar quiz pré-selecionado:', err);
+      }
+    }
+  }, [gameId, questions.length, isProcessingImport]);
 
   const toggleHostParticipation = async (enable: boolean, customName?: string) => {
     if (!gameId || !auth.currentUser) return;
@@ -554,6 +572,17 @@ export default function Host() {
       timeLimit: q.timeLimit
     }));
 
+    try {
+      saveQuiz({
+        id: `host_sala_${gameId}`,
+        title: `Sessão Sala ${gameId}`,
+        questions,
+        source: 'downloaded_session'
+      });
+    } catch (e) {
+      console.warn('Erro ao salvar no localStorage:', e);
+    }
+
     const blob = new Blob([JSON.stringify(cleanList, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -561,6 +590,18 @@ export default function Host() {
     a.download = `questoes_sala_${gameId}.json`;
     a.click();
     URL.revokeObjectURL(url);
+    setImportSuccess('Questões baixadas em JSON e também salvas no navegador para o Modo Solo!');
+  };
+
+  const handleSaveForSolo = () => {
+    if (questions.length === 0) return;
+    saveQuiz({
+      id: `host_sala_${gameId}`,
+      title: `Sessão Sala ${gameId}`,
+      questions,
+      source: 'downloaded_session'
+    });
+    setImportSuccess('Quiz salvo no navegador com sucesso! Você pode praticar sozinho no Modo Solo a qualquer momento.');
   };
 
   // Process text or file upload
@@ -1763,6 +1804,14 @@ export default function Host() {
                       Questões Carregadas para a Sessão ({questions.length})
                     </h2>
                     <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleSaveForSolo}
+                        className="text-xs font-bold text-indigo-300 hover:text-white bg-neutral-900 border border-indigo-500/40 hover:bg-neutral-750 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
+                        title="Salvar no navegador para treinar sozinho no Modo Solo"
+                      >
+                        <BookOpen className="w-3.5 h-3.5" />
+                        Salvar p/ Solo
+                      </button>
                       <button
                         onClick={handleExportQuestions}
                         className="text-xs font-bold text-neutral-300 hover:text-white bg-neutral-900 border border-neutral-700 hover:bg-neutral-750 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"

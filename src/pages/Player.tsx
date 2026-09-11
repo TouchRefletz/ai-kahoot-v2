@@ -7,11 +7,13 @@ import { gradeShortAnswerAsync } from '../lib/grading';
 import { Question, PlayerData, GradingResult } from '../lib/types';
 import {
   BrainCircuit, CheckCircle2, XCircle, Play, Trophy, Send,
-  HelpCircle, Sparkles, Clock, AlertTriangle, FileCheck, UserX
+  HelpCircle, Sparkles, Clock, AlertTriangle, FileCheck, UserX,
+  Download, BookOpen
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
 import { motion, AnimatePresence } from 'motion/react';
+import { saveQuiz, downloadQuizAsJson } from '../lib/quizStorage';
 
 export default function Player() {
   const { gameId: urlGameId } = useParams();
@@ -22,6 +24,7 @@ export default function Player() {
   const [joined, setJoined] = useState(false);
   const [playerId, setPlayerId] = useState<string | null>(null);
   const [wasKicked, setWasKicked] = useState(false);
+  const [savedToast, setSavedToast] = useState<string | null>(null);
 
   const [gameState, setGameState] = useState<any>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -376,18 +379,57 @@ export default function Player() {
   );
   const grading = hasAnswered ? (playerState?.lastGradingResult || localGradingResult) : null;
 
+  const handleSaveAndDownloadQuiz = (openSolo = false) => {
+    if (questions.length === 0) {
+      alert('As questões ainda não foram carregadas ou a sessão está vazia.');
+      return;
+    }
+    const title = `Sessão Sala ${gameId || 'Online'} - ${new Date().toLocaleDateString('pt-BR')}`;
+    saveQuiz({
+      id: `sala_${gameId}_${Date.now()}`,
+      title,
+      questions,
+      source: 'downloaded_session'
+    });
+    downloadQuizAsJson(title, questions, `sessao_sala_${gameId || 'quiz'}`);
+    setSavedToast('Perguntas salvas com sucesso no navegador e arquivo .json baixado!');
+    setTimeout(() => setSavedToast(null), 5000);
+    if (openSolo) {
+      navigate('/solo');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-neutral-900 text-white font-sans flex flex-col">
       {/* Top Header */}
-      <header className="bg-neutral-950 px-6 py-3.5 border-b border-neutral-800 flex justify-between items-center">
+      <header className="bg-neutral-950 px-4 sm:px-6 py-3.5 border-b border-neutral-800 flex justify-between items-center">
         <div className="flex items-center gap-2">
           <div className="w-2.5 h-2.5 rounded-full bg-emerald-400"></div>
           <span className="font-bold text-neutral-200 text-sm">{name}</span>
         </div>
-        <div className="bg-neutral-800/90 px-3.5 py-1 rounded-full font-mono font-bold text-indigo-400 text-sm border border-neutral-700">
-          {playerState?.score || 0} pts
+        <div className="flex items-center gap-2">
+          {questions.length > 0 && (
+            <button
+              onClick={() => handleSaveAndDownloadQuiz(false)}
+              className="text-xs bg-neutral-800 hover:bg-neutral-700 text-indigo-300 font-bold px-3 py-1.5 rounded-xl border border-neutral-700 transition-colors flex items-center gap-1.5 cursor-pointer"
+              title="Baixar questões desta sessão para treinar sozinho depois"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Baixar Perguntas</span>
+            </button>
+          )}
+          <div className="bg-neutral-800/90 px-3.5 py-1 rounded-full font-mono font-bold text-indigo-400 text-sm border border-neutral-700">
+            {playerState?.score || 0} pts
+          </div>
         </div>
       </header>
+
+      {/* Toast notification */}
+      {savedToast && (
+        <div className="bg-emerald-500 text-neutral-950 font-bold text-xs px-4 py-2 text-center animate-in fade-in">
+          {savedToast}
+        </div>
+      )}
 
       <main className="flex-1 flex flex-col p-4 max-w-2xl mx-auto w-full">
 
@@ -896,6 +938,39 @@ export default function Player() {
                 })}
               </div>
             </div>
+
+            {/* DOWNLOAD & SOLO TRAINING CARD FOR STUDENTS */}
+            {questions.length > 0 && (
+              <div className="bg-gradient-to-r from-indigo-950/70 to-neutral-800/90 p-5 rounded-3xl border border-indigo-500/40 space-y-3 shadow-xl">
+                <div className="space-y-1">
+                  <h4 className="font-bold text-sm text-white flex items-center gap-2">
+                    <BookOpen className="w-4 h-4 text-indigo-400" />
+                    <span>Treinar estas questões sozinho</span>
+                  </h4>
+                  <p className="text-xs text-neutral-300 leading-relaxed">
+                    Você pode baixar as {questions.length} questões desta aula ou salvá-las no navegador para refazer e estudar com correção por IA a qualquer hora.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
+                  <button
+                    onClick={() => handleSaveAndDownloadQuiz(false)}
+                    className="bg-neutral-800 hover:bg-neutral-750 text-white font-bold text-xs py-2.5 px-3 rounded-xl transition-colors flex items-center justify-center gap-2 border border-neutral-700 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>Baixar Questões (.json)</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSaveAndDownloadQuiz(true)}
+                    className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs py-2.5 px-3 rounded-xl transition-all shadow-md shadow-indigo-600/20 flex items-center justify-center gap-2 cursor-pointer"
+                  >
+                    <Play className="w-3.5 h-3.5 fill-current" />
+                    <span>Salvar e Praticar no Modo Solo</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 

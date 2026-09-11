@@ -6,6 +6,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import Home from './pages/Home';
 import Host from './pages/Host';
 import Player from './pages/Player';
+import Solo from './pages/Solo';
 
 export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
@@ -30,6 +31,8 @@ export default function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<Home />} />
+          <Route path="/solo/:quizId?" element={<Solo />} />
+          <Route path="/solo" element={<Solo />} />
           <Route path="/host/:gameId?" element={<Host />} />
           <Route path="/host" element={<Host />} />
           <Route path="/play/:gameId?" element={<Player />} />
