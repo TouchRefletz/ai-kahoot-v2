@@ -18,7 +18,8 @@ import {
   Trash2,
   Upload,
   Users,
-  XCircle
+  XCircle,
+  Shuffle
 } from 'lucide-react';
 import { Question, GradingResult } from '../lib/types';
 import { gradeShortAnswerAsync } from '../lib/grading';
@@ -94,6 +95,15 @@ export default function Solo() {
 
   const refreshSavedQuizzes = () => {
     setSavedQuizzes(getSavedQuizzes());
+  };
+
+  const shuffleArray = <T,>(arr: T[]): T[] => {
+    const copy = [...arr];
+    for (let i = copy.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copy[i], copy[j]] = [copy[j], copy[i]];
+    }
+    return copy;
   };
 
   const startQuiz = (quiz: SavedQuiz, customQuestions?: Question[]) => {
@@ -437,13 +447,25 @@ export default function Solo() {
                         </button>
                       </div>
 
-                      <button
-                        onClick={() => startQuiz(quiz)}
-                        className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 shadow-md shadow-indigo-600/20 cursor-pointer"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        Iniciar Treino
-                      </button>
+                      <div className="flex items-center gap-2">
+                        {quiz.questions && quiz.questions.length > 1 && (
+                          <button
+                            onClick={() => startQuiz(quiz, shuffleArray(quiz.questions))}
+                            title="Iniciar treino em ordem aleatória"
+                            className="bg-neutral-800 hover:bg-neutral-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 font-bold text-xs px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                          >
+                            <Shuffle className="w-3.5 h-3.5" />
+                            <span className="hidden sm:inline">Aleatório</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => startQuiz(quiz)}
+                          className="bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 shadow-md shadow-indigo-600/20 cursor-pointer"
+                        >
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          Iniciar Treino
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -484,13 +506,25 @@ export default function Solo() {
                       Baixar Modelo JSON
                     </button>
 
-                    <button
-                      onClick={() => startQuiz(demo)}
-                      className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 shadow-md shadow-emerald-600/20 cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      Treinar com Exemplo
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {demo.questions && demo.questions.length > 1 && (
+                        <button
+                          onClick={() => startQuiz(demo, shuffleArray(demo.questions))}
+                          title="Iniciar treino em ordem aleatória"
+                          className="bg-neutral-800 hover:bg-neutral-700 text-amber-300 border border-amber-500/40 hover:border-amber-400 font-bold text-xs px-3 py-2 rounded-xl transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                          <Shuffle className="w-3.5 h-3.5" />
+                          <span className="hidden sm:inline">Aleatório</span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => startQuiz(demo)}
+                        className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-4 py-2 rounded-xl transition-all flex items-center gap-1.5 shadow-md shadow-emerald-600/20 cursor-pointer"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-current" />
+                        Treinar com Exemplo
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))}

@@ -14,7 +14,7 @@ import {
   Copy, Check, Download, Sparkles, PlusCircle, AlertCircle, ChevronRight,
   Trophy, X, FileCode, ArrowRight, CornerDownRight, RefreshCw, Layers,
   Gamepad2, Send, Clock, FastForward, Medal, Sliders, Edit3, Plus, Minus,
-  RotateCcw, Award, UserX, Share2, LogOut, LogIn, BookOpen
+  RotateCcw, Award, UserX, Share2, LogOut, LogIn, BookOpen, Shuffle
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import confetti from 'canvas-confetti';
@@ -73,6 +73,7 @@ export default function Host() {
   const [gameState, setGameState] = useState<any>(null);
   const [players, setPlayers] = useState<PlayerData[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const [isShuffling, setIsShuffling] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number>(0);
 
   // Question Time Configuration State
@@ -602,6 +603,51 @@ export default function Host() {
       source: 'downloaded_session'
     });
     setImportSuccess('Quiz salvo no navegador com sucesso! Você pode praticar sozinho no Modo Solo a qualquer momento.');
+  };
+
+  // Shuffle questions randomly
+  const handleShuffleQuestions = async () => {
+    if (!gameId || questions.length < 2) {
+      alert('É necessário ter pelo menos 2 questões para poder embaralhar a ordem.');
+      return;
+    }
+
+    if (gameState?.status && gameState.status !== 'lobby' && gameState.status !== 'ended') {
+      alert('A ordem das questões só pode ser alterada no Lobby antes de iniciar a rodada.');
+      return;
+    }
+
+    setIsShuffling(true);
+    try {
+      // Fisher-Yates shuffle algorithm
+      const shuffled = [...questions];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+
+      // Firestore batch write limit is 500 ops; update in chunks of 400
+      const chunkSize = 400;
+      for (let i = 0; i < shuffled.length; i += chunkSize) {
+        const chunk = shuffled.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach((q, offset) => {
+          if (q.id) {
+            batch.update(doc(db, `games/${gameId}/questions`, q.id), {
+              index: i + offset
+            });
+          }
+        });
+        await batch.commit();
+      }
+
+      setImportSuccess(`🎲 Ordem de todas as ${questions.length} questões foi embaralhada aleatoriamente com sucesso!`);
+      setTimeout(() => setImportSuccess(null), 4500);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `games/${gameId}/questions`);
+    } finally {
+      setIsShuffling(false);
+    }
   };
 
   // Process text or file upload
@@ -1803,7 +1849,21 @@ export default function Host() {
                       <FileText className="w-5 h-5 text-indigo-400" />
                       Questões Carregadas para a Sessão ({questions.length})
                     </h2>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={handleShuffleQuestions}
+                        disabled={isShuffling || questions.length < 2}
+                        className={cn(
+                          "text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-all cursor-pointer border",
+                          isShuffling
+                            ? "bg-neutral-800 text-neutral-500 border-neutral-700"
+                            : "text-amber-300 hover:text-white bg-amber-950/40 hover:bg-amber-900/60 border-amber-500/40 hover:border-amber-400 shadow-sm"
+                        )}
+                        title="Embaralhar aleatoriamente a ordem das questões para esta sessão"
+                      >
+                        <Shuffle className={cn("w-3.5 h-3.5", isShuffling && "animate-spin")} />
+                        {isShuffling ? "Embaralhando..." : "Ordem Aleatória"}
+                      </button>
                       <button
                         onClick={handleSaveForSolo}
                         className="text-xs font-bold text-indigo-300 hover:text-white bg-neutral-900 border border-indigo-500/40 hover:bg-neutral-750 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors cursor-pointer"
@@ -2127,6 +2187,33 @@ export default function Host() {
                   })
                 )}
               </div>
+
+              {questions.length > 1 && (
+                <div className="flex items-center justify-between bg-neutral-900/90 border border-neutral-750 p-3 rounded-2xl mb-3 text-xs">
+                  <div className="flex items-center gap-2 text-neutral-300">
+                    <Shuffle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <div>
+                      <span className="font-bold text-neutral-200 block leading-tight">Ordem das Questões</span>
+                      <span className="text-[11px] text-neutral-400">{questions.length} questões na fila</span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleShuffleQuestions}
+                    disabled={isShuffling}
+                    className={cn(
+                      "text-xs font-bold px-3 py-1.5 rounded-xl flex items-center gap-1.5 transition-all border cursor-pointer",
+                      isShuffling
+                        ? "bg-neutral-800 text-neutral-500 border-neutral-700"
+                        : "text-amber-300 hover:text-white bg-amber-950/60 hover:bg-amber-900/80 border-amber-500/40 hover:border-amber-400 shadow-sm"
+                    )}
+                    title="Embaralhar aleatoriamente a ordem das questões antes de iniciar"
+                  >
+                    <Shuffle className={cn("w-3.5 h-3.5", isShuffling && "animate-spin")} />
+                    {isShuffling ? "Embaralhando..." : "Embaralhar Ordem"}
+                  </button>
+                </div>
+              )}
 
               <button
                 onClick={startGame}
